@@ -227,9 +227,9 @@ class SIMPOptimizer2D:
         for i in range(4):
             B1[0, 2*i], B1[1, 2*i+1], B1[2, 2*i], B1[3, 2*i+1] = dNx[i], dNx[i], dNy[i], dNy[i]
             
-        Tx_mat = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 0]], dtype=np.float64)
-        Ty_mat = np.array([[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]], dtype=np.float64)
-        Txy_mat = np.array([[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]], dtype=np.float64)
+        Tx_mat = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], dtype=np.float64)
+        Ty_mat = np.array([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=np.float64)
+        Txy_mat = np.array([[0, 0, 1, 0], [0, 0, 0, 1], [1, 0, 0, 0], [0, 1, 0, 0]], dtype=np.float64)
         
         area = dx * dy * t
         self.Tx = (B1.T @ Tx_mat @ B1) * area
@@ -491,8 +491,9 @@ class SIMPOptimizer2D:
                 alpha = float(np.clip(alpha_buckling, 0.0, 0.95))
                 sens_total = (1.0 - alpha) * sens_comp + alpha * sens_mu
 
-            # 3. Spatial Sensitivity Filtering (anti-checkerboard)
-            dc_filtered = np.array(self.H @ (xPhys * sens_total)).flatten() / (self.Hs * np.maximum(1e-3, xPhys))
+            # 3. Spatial Filtering Chain Rule (Density Filter + Heaviside)
+            dxPhys_dxtilde = beta * (1.0 - np.tanh(beta * (x_tilde - eta))**2) / denom
+            dc_filtered = np.array(self.H @ (sens_total * dxPhys_dxtilde / self.Hs)).flatten()
 
             # 4. Deterministic Optimality Criteria (OC) Density Update with Bisection
             l1, l2, move = 1e-9, 1e9, 0.2
