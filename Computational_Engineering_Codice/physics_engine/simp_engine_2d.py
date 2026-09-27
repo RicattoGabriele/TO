@@ -502,7 +502,9 @@ class SIMPOptimizer2D:
                 lmid = 0.5 * (l2 + l1)
                 Be = np.sqrt(np.maximum(0.0, -dc_filtered / (lmid * np.maximum(1e-12, dv_filtered))))
                 xnew = np.maximum(0.001, np.maximum(x - move, np.minimum(1.0, np.minimum(x + move, x * Be))))
-                if np.mean(xnew) > self.volfrac:
+                x_tilde_new = np.array(self.H @ xnew).flatten() / self.Hs
+                xPhys_new = (np.tanh(beta * eta) + np.tanh(beta * (x_tilde_new - eta))) / denom
+                if np.mean(xPhys_new) > self.volfrac:
                     l1 = lmid
                 else:
                     l2 = lmid
@@ -510,7 +512,7 @@ class SIMPOptimizer2D:
             change = float(np.max(np.abs(xnew - x)))
             ch_history.append(change)
             x = xnew.copy()
-            xPhys = x.copy()
+            xPhys = xPhys_new.copy()
 
             if change < tol:
                 break
