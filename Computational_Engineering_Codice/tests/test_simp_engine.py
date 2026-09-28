@@ -63,7 +63,7 @@ class TestSIMPEngine2D(unittest.TestCase):
         self.assertAlmostEqual(res.volume_fraction, target_vol, places=2)
 
         # Density bounds
-        self.assertGreaterEqual(np.min(res.density_matrix), 0.001)
+        self.assertGreaterEqual(np.min(res.density_matrix), 0.0)
         self.assertLessEqual(np.max(res.density_matrix), 1.0)
 
         # Compliance must decrease as SIMP redistributes material

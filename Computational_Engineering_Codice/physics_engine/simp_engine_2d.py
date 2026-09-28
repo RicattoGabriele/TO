@@ -227,9 +227,9 @@ class SIMPOptimizer2D:
         for i in range(4):
             B1[0, 2*i], B1[1, 2*i+1], B1[2, 2*i], B1[3, 2*i+1] = dNx[i], dNx[i], dNy[i], dNy[i]
             
-        Tx_mat = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 0]], dtype=np.float64)
-        Ty_mat = np.array([[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]], dtype=np.float64)
-        Txy_mat = np.array([[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]], dtype=np.float64)
+        Tx_mat = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], dtype=np.float64)
+        Ty_mat = np.array([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=np.float64)
+        Txy_mat = np.array([[0, 0, 1, 0], [0, 0, 0, 1], [1, 0, 0, 0], [0, 1, 0, 0]], dtype=np.float64)
         
         area = dx * dy * t
         self.Tx = (B1.T @ Tx_mat @ B1) * area
@@ -491,16 +491,20 @@ class SIMPOptimizer2D:
                 alpha = float(np.clip(alpha_buckling, 0.0, 0.95))
                 sens_total = (1.0 - alpha) * sens_comp + alpha * sens_mu
 
-            # 3. Spatial Sensitivity Filtering (anti-checkerboard)
-            dc_filtered = np.array(self.H @ (xPhys * sens_total)).flatten() / (self.Hs * np.maximum(1e-3, xPhys))
+            # 3. Spatial Filtering Chain Rule (Density Filter + Heaviside)
+            dxPhys_dxtilde = beta * (1.0 - np.tanh(beta * (x_tilde - eta))**2) / denom
+            dc_filtered = np.array(self.H @ (sens_total * dxPhys_dxtilde / self.Hs)).flatten()
+            dv_filtered = np.array(self.H @ (dxPhys_dxtilde / self.Hs)).flatten()
 
             # 4. Deterministic Optimality Criteria (OC) Density Update with Bisection
             l1, l2, move = 1e-9, 1e9, 0.2
             while (l2 - l1) / (l1 + l2) > 1e-4:
                 lmid = 0.5 * (l2 + l1)
-                Be = np.sqrt(np.maximum(0.0, -dc_filtered / lmid))
+                Be = np.sqrt(np.maximum(0.0, -dc_filtered / (lmid * np.maximum(1e-12, dv_filtered))))
                 xnew = np.maximum(0.001, np.maximum(x - move, np.minimum(1.0, np.minimum(x + move, x * Be))))
-                if np.mean(xnew) > self.volfrac:
+                x_tilde_new = np.array(self.H @ xnew).flatten() / self.Hs
+                xPhys_new = (np.tanh(beta * eta) + np.tanh(beta * (x_tilde_new - eta))) / denom
+                if np.mean(xPhys_new) > self.volfrac:
                     l1 = lmid
                 else:
                     l2 = lmid
@@ -508,7 +512,7 @@ class SIMPOptimizer2D:
             change = float(np.max(np.abs(xnew - x)))
             ch_history.append(change)
             x = xnew.copy()
-            xPhys = x.copy()
+            xPhys = xPhys_new.copy()
 
             if change < tol:
                 break
