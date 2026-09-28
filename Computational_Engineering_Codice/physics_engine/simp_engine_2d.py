@@ -33,23 +33,23 @@ def oc_update_mma(it, x, dg0, g1, dg1, ocPar, xOld, xOld1, as_prev, beta=2.0, re
         as_new = np.zeros((len(x), 2))
         as_new[:, 0] = x - gm * (xOld - as_prev[:, 0])
         as_new[:, 1] = x + gm * (as_prev[:, 1] - xOld)
-        
+
     xL = np.maximum(0.9 * as_new[:, 0] + 0.1 * x, xL)
     xU = np.minimum(0.9 * as_new[:, 1] + 0.1 * x, xU)
-    
+
     p0_0, q0_0 = np.maximum(dg0, 0) * dg0, np.maximum(-dg0, 0) * -dg0
     p1_0, q1_0 = np.maximum(dg1, 0) * dg1, np.maximum(-dg1, 0) * -dg1
-    
+
     p0 = p0_0 * (as_new[:, 1] - x)**2
     q0 = q0_0 * (x - as_new[:, 0])**2
     p1 = p1_0 * (as_new[:, 1] - x)**2
     q1 = q1_0 * (x - as_new[:, 0])**2
-    
+
     def primalProj(lm):
         num = np.sqrt(p0 + lm * p1) * as_new[:, 0] + np.sqrt(q0 + lm * q1) * as_new[:, 1]
         den = np.sqrt(p0 + lm * p1) + np.sqrt(q0 + lm * q1) + 1e-16
         return np.clip(num / den, xL, xU)
-        
+
     def psiDual(lm):
         x_lm = primalProj(lm)
         t1 = g1 - np.dot(as_new[:, 1] - x, p1_0) - np.dot(x - as_new[:, 0], q1_0)
@@ -213,24 +213,24 @@ class SIMPOptimizer2D:
         nu, E0, dx, dy, t = self.nu, self.E0, self.dx, self.dy, self.thickness
         factor = E0 / (1.0 - nu**2)
         self.Cmat0 = factor * np.array([[1.0, nu, 0.0], [nu, 1.0, 0.0], [0.0, 0.0, (1.0 - nu) / 2.0]], dtype=np.float64)
-        
+
         dNdxi = np.array([-0.25, 0.25, 0.25, -0.25])
         dNdeta = np.array([-0.25, -0.25, 0.25, 0.25])
         dNx, dNy = dNdxi * (2.0 / dx), dNdeta * (2.0 / dy)
-        
+
         self.B0 = np.zeros((3, 8), dtype=np.float64)
         for i in range(4):
             self.B0[0, 2*i], self.B0[1, 2*i+1] = dNx[i], dNy[i]
             self.B0[2, 2*i], self.B0[2, 2*i+1] = dNy[i], dNx[i]
-            
+
         B1 = np.zeros((4, 8), dtype=np.float64)
         for i in range(4):
             B1[0, 2*i], B1[1, 2*i+1], B1[2, 2*i], B1[3, 2*i+1] = dNx[i], dNx[i], dNy[i], dNy[i]
-            
+
         Tx_mat = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], dtype=np.float64)
         Ty_mat = np.array([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=np.float64)
         Txy_mat = np.array([[0, 0, 1, 0], [0, 0, 0, 1], [1, 0, 0, 0], [0, 1, 0, 0]], dtype=np.float64)
-        
+
         area = dx * dy * t
         self.Tx = (B1.T @ Tx_mat @ B1) * area
         self.Ty = (B1.T @ Ty_mat @ B1) * area
@@ -349,11 +349,13 @@ class SIMPOptimizer2D:
         tol: float = 0.01,
         mode: str = "compliance",
         alpha_buckling: float = 0.40,
+        nEig: int = 1,
+        ks_rho: float = 40.0,
         progress_callback = None
     ) -> SIMPResult:
         """
         Runs topology optimization.
-        
+
         Args:
             max_iter: Maximum number of iterations (default: 45)
             tol: Convergence tolerance on change in design variables (default: 0.01)
@@ -386,25 +388,26 @@ class SIMPOptimizer2D:
             iterations = it
             if progress_callback:
                 progress_callback(it, max_iter)
-                
+
             # 0. Density Filtering and Heaviside Projection
             # Continuation scheme: beta doubles every 15 iterations (max 16)
             beta = min(16.0, 1.0 * (2.0 ** (it // 15)))
             eta = 0.5
-            
+
             x_tilde = np.array(self.H @ x).flatten() / self.Hs
             denom = np.tanh(beta * eta) + np.tanh(beta * (1.0 - eta))
             xPhys = (np.tanh(beta * eta) + np.tanh(beta * (x_tilde - eta))) / denom
-            
+
             # 1. Linear Elasticity FEA
             E_elements = self.Emin + (xPhys ** self.penal) * (self.E0 - self.Emin)
             sK = (self.k0.flatten()[np.newaxis, :] * E_elements[:, np.newaxis]).flatten()
 
             K_full = sp.coo_matrix((sK, (iK, jK)), shape=(self.num_dofs, self.num_dofs)).tocsr()
             K_free = K_full[free_dofs, :][:, free_dofs]
+            solve_K = sla.factorized(K_free.tocsc())
             F_free = self.force_vector[free_dofs]
 
-            U_free = sla.spsolve(K_free, F_free)
+            U_free = solve_K(F_free)
             U = np.zeros(self.num_dofs, dtype=np.float64)
             U[free_dofs] = U_free
 
@@ -422,7 +425,7 @@ class SIMPOptimizer2D:
                 # 2. Linearized Buckling Analysis (LBA) and Geometric Stiffness G
                 sigma_e = (self.Cmat0 @ self.B0 @ U_e.T).T
                 Ge = sigma_e[:, 0, None, None] * self.Tx + sigma_e[:, 1, None, None] * self.Ty + sigma_e[:, 2, None, None] * self.Txy
-                
+
                 # Stress stiffness penalization pG = 3.0 to prevent spurious void buckling
                 E_G = (xPhys ** 3.0) * self.E0
                 Ge_penalized = Ge * E_G[:, None, None]
@@ -431,53 +434,74 @@ class SIMPOptimizer2D:
                 G_free = G_full[free_dofs, :][:, free_dofs]
 
                 try:
-                    # Solve generalized eigenvalue problem: G * phi = -mu * K * phi
-                    evals, evecs = sla.eigsh(G_free, M=K_free, k=1, which='SA', tol=1e-3)
-                    mu_1 = -evals[0]
-                    phi_free = evecs[:, 0]
-                    # Orthonormalize phi^T * K * phi = 1
-                    norm_phi = np.sqrt(np.maximum(1e-16, phi_free @ (K_free @ phi_free)))
-                    phi_free /= norm_phi
-                except Exception:
-                    mu_1 = 1e-6
-                    phi_free = np.ones(len(free_dofs)) / np.sqrt(len(free_dofs))
+                    # Request nEig + 4 to ensure robustness for tight clusters
+                    k_request = min(nEig + 4, G_free.shape[0] - 2)
+                    evals, evecs = sla.eigsh(G_free, M=K_free, k=k_request, which='SA', tol=1e-3)
+                    # We want the lowest buckling eigenvalues, which correspond to the HIGHEST negative evals
+                    # eigs with 'SA' returns smallest algebraic, so most negative.
+                    # evals are sorted algebraically. We want the nEig most negative ones.
+                    # mu = -evals. We sort mu descending to pick the largest mu (lowest BLF).
+                    mu_all = -evals
+                    idx_sort = np.argsort(mu_all)[::-1]
+                    mu_all = mu_all[idx_sort]
+                    evecs = evecs[:, idx_sort]
 
-                blf = 1.0 / mu_1 if mu_1 > 1e-12 else 1e12
+                    mu_active = mu_all[:nEig]
+                    evecs_active = evecs[:, :nEig]
+
+                    for i in range(nEig):
+                        norm_phi = np.sqrt(np.maximum(1e-16, evecs_active[:, i] @ (K_free @ evecs_active[:, i])))
+                        evecs_active[:, i] /= norm_phi
+                except Exception:
+                    mu_active = np.array([1e-6] * nEig)
+                    evecs_active = np.ones((len(free_dofs), nEig)) / np.sqrt(len(free_dofs))
+
+                mu_max = np.max(mu_active)
+                if nEig == 1:
+                    mu_ks = mu_max
+                    weights_ks = np.array([1.0])
+                else:
+                    sum_exp = np.sum(np.exp(ks_rho * (mu_active - mu_max)))
+                    mu_ks = mu_max + (1.0 / ks_rho) * np.log(sum_exp)
+                    weights_ks = np.exp(ks_rho * (mu_active - mu_max)) / sum_exp
+
+                blf = 1.0 / mu_ks if mu_ks > 1e-12 else 1e12
                 blf_history.append(float(blf))
 
-                phi = np.zeros(self.num_dofs, dtype=np.float64)
-                phi[free_dofs] = phi_free
-                phi_e = phi[self.edofMat]
+                d_mu_ks = np.zeros(self.num_elements, dtype=np.float64)
 
-                # Sensitivity of eigenvalue mu_1 = 1/lambda:
-                # dmu/dx = - ( phi^T * dG/dx * phi + mu_1 * phi^T * dK/dx * phi - w^T * dK/dx * u )
-                phi_Ge_phi = np.einsum('ni,nij,nj->n', phi_e, Ge, phi_e)
-                term1 = phi_Ge_phi * 3.0 * self.E0 * (xPhys ** 2.0)
+                for idx_m in range(nEig):
+                    phi = np.zeros(self.num_dofs, dtype=np.float64)
+                    phi[free_dofs] = evecs_active[:, idx_m]
+                    phi_e = phi[self.edofMat]
+                    mu_m = mu_active[idx_m]
 
-                phi_Ke_phi = np.einsum('ni,ij,nj->n', phi_e, self.k0, phi_e)
-                term2 = mu_1 * phi_Ke_phi * self.penal * (self.E0 - self.Emin) * (xPhys ** (self.penal - 1.0))
+                    phi_Ge_phi = np.einsum('ni,nij,nj->n', phi_e, Ge, phi_e)
+                    term1 = phi_Ge_phi * 3.0 * self.E0 * (xPhys ** 2.0)
 
-                # Adjoint vector w for dG/du
-                P = np.column_stack([
-                    np.einsum('ni,ij,nj->n', phi_e, self.Tx, phi_e),
-                    np.einsum('ni,ij,nj->n', phi_e, self.Ty, phi_e),
-                    np.einsum('ni,ij,nj->n', phi_e, self.Txy, phi_e)
-                ])
-                adj_L_e = (P @ (self.Cmat0 @ self.B0)) * E_G[:, None]
-                adj_L = np.zeros(self.num_dofs, dtype=np.float64)
-                np.add.at(adj_L, self.edofMat, adj_L_e)
+                    phi_Ke_phi = np.einsum('ni,ij,nj->n', phi_e, self.k0, phi_e)
+                    term2 = mu_m * phi_Ke_phi * self.penal * (self.E0 - self.Emin) * (xPhys ** (self.penal - 1.0))
 
-                w_free = sla.spsolve(K_free, adj_L[free_dofs])
-                w = np.zeros(self.num_dofs, dtype=np.float64)
-                w[free_dofs] = w_free
-                w_e = w[self.edofMat]
+                    P = np.column_stack([
+                        np.einsum('ni,ij,nj->n', phi_e, self.Tx, phi_e),
+                        np.einsum('ni,ij,nj->n', phi_e, self.Ty, phi_e),
+                        np.einsum('ni,ij,nj->n', phi_e, self.Txy, phi_e)
+                    ])
+                    adj_L_e = (P @ (self.Cmat0 @ self.B0)) * E_G[:, None]
+                    adj_L = np.zeros(self.num_dofs, dtype=np.float64)
+                    np.add.at(adj_L, self.edofMat, adj_L_e)
 
-                term3 = np.sum((w_e @ self.k0) * U_e, axis=1) * self.penal * (self.E0 - self.Emin) * (xPhys ** (self.penal - 1.0))
+                    w_free = solve_K(adj_L[free_dofs])
+                    w = np.zeros(self.num_dofs, dtype=np.float64)
+                    w[free_dofs] = w_free
+                    w_e = w[self.edofMat]
 
-                # d_mu is the gradient of mu = 1/lambda.
-                # Since we want to maximize lambda (minimize mu), elements where d_mu is negative
-                # will decrease mu (increase lambda) when material is added.
-                d_mu = -(term1 + term2 - term3)
+                    term3 = np.sum((w_e @ self.k0) * U_e, axis=1) * self.penal * (self.E0 - self.Emin) * (xPhys ** (self.penal - 1.0))
+
+                    d_mu_m = -(term1 + term2 - term3)
+                    d_mu_ks += weights_ks[idx_m] * d_mu_m
+
+                d_mu = d_mu_ks
 
                 # Normalize scales
                 scale_comp = float(np.mean(np.abs(dc_comp)))
@@ -494,6 +518,8 @@ class SIMPOptimizer2D:
             # 3. Spatial Filtering Chain Rule (Density Filter + Heaviside)
             dxPhys_dxtilde = beta * (1.0 - np.tanh(beta * (x_tilde - eta))**2) / denom
             dc_filtered = np.array(self.H @ (sens_total * dxPhys_dxtilde / self.Hs)).flatten()
+
+            # 4. Volume derivatives via Chain Rule
             dv_filtered = np.array(self.H @ (dxPhys_dxtilde / self.Hs)).flatten()
 
             # 4. Deterministic Optimality Criteria (OC) Density Update with Bisection
@@ -504,6 +530,7 @@ class SIMPOptimizer2D:
                 xnew = np.maximum(0.001, np.maximum(x - move, np.minimum(1.0, np.minimum(x + move, x * Be))))
                 x_tilde_new = np.array(self.H @ xnew).flatten() / self.Hs
                 xPhys_new = (np.tanh(beta * eta) + np.tanh(beta * (x_tilde_new - eta))) / denom
+
                 if np.mean(xPhys_new) > self.volfrac:
                     l1 = lmid
                 else:
@@ -544,7 +571,7 @@ class SIMPOptimizer2D:
         self,
         res: SIMPResult,
         threshold: float = 0.5,
-        colormap: str = "Jet",
+        colormap: str = "Jet_r",
         smooth: bool = False
     ):
         """
@@ -693,7 +720,7 @@ class SIMPOptimizer2D:
         """
         Computes 2D elemental stresses, principal stresses (sigma_I, sigma_II),
         and von Mises stress for the converged topology.
-        
+
         Returns:
             Dict containing:
                 'sigma_I': 2D array (nely, nelx) of maximum principal stress (tensile if > 0)
@@ -748,13 +775,13 @@ class SIMPOptimizer2D:
         res: SIMPResult,
         threshold: float = 0.40,
         view_style: str = "dual_scientific",
-        colormap: str = "Jet",
+        colormap: str = "Jet_r",
         smooth: bool = False
     ):
         """
         Creates publication-quality, high-contrast figures mirroring the state-of-the-art
         visualizations from Ferrari, Sigmund & Guest (2021).
-        
+
         Args:
             res: SIMPResult object
             threshold: Material threshold to isolate solid structure (default: 0.40)
@@ -787,8 +814,8 @@ class SIMPOptimizer2D:
             min_val, max_val = -max_abs, max_abs
         else:
             min_val, max_val = -1.0, 1.0
-        
-        
+
+
         s_II_masked = s_masked  # Keep variable name for rest of code
 
         # Boundary conditions markers
@@ -1060,4 +1087,3 @@ class SIMPOptimizer2D:
             depth_z_mm=depth_z_mm,
             beams=beams
         )
-
