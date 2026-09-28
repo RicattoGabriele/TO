@@ -91,6 +91,18 @@ with col_s2:
     
     rmin_in = st.slider("Filter Radius r_min (mm)", min_value=1.5, max_value=10.0, value=2.5, step=0.5)
     penal_in = st.number_input("SIMP Penalization (p)", min_value=1.0, max_value=4.0, value=3.0, step=0.5)
+    
+    st.markdown("**Buckling Aggregation Method**")
+    agg_method = st.radio(
+        "Aggregation", 
+        ["Weighted Sum (Fundamental Mode, nEig=1)", "KS Aggregator (Multiple Modes, nEig>1)"], 
+        index=1, 
+        label_visibility="collapsed"
+    )
+    if "KS" in agg_method:
+        nEig_in = st.number_input("Eigenvalues (nEig)", min_value=2, max_value=10, value=4, step=1)
+    else:
+        nEig_in = 1
 
 with col_s3:
     st.markdown("**3. Boundary Conditions & Loads**")
@@ -141,7 +153,7 @@ if num_elements > 20000:
 simp_key = (
     int(nelx_in), int(nely_in), float(dx_in), float(dy_in),
     float(volfrac_in), float(rmin_in), float(penal_in),
-    "buckling_max", float(alpha_in),
+    "buckling_max", float(alpha_in), int(nEig_in),
     bc_type, custom_sup_str, tuple(loads_simp)
 )
 
@@ -156,7 +168,7 @@ if st.button("Run Topology Optimization", type="primary"):
             def update_progress(it, max_it):
                 pct = int((it / max_it) * 100)
                 progress_bar.progress(it / max_it)
-                progress_text.info(f"⏳ Executing SIMP Optimization... Iteration {it}/{max_it} - {pct}% complete...")
+                progress_text.info(f"🚀 Executing SIMP Optimization... Iteration {it}/{max_it} - {pct}% complete...")
             optimizer = SIMPOptimizer2D(
                 nelx=int(nelx_in), nely=int(nely_in), dx=float(dx_in), dy=float(dy_in),
                 thickness=10.0, penal=float(penal_in), rmin=float(rmin_in), volfrac=float(volfrac_in)
@@ -179,7 +191,7 @@ if st.button("Run Topology Optimization", type="primary"):
             for lx, ly, fx, fy in loads_simp:
                 optimizer.add_load(lx, ly, fx=fx, fy=fy)
 
-            simp_res = optimizer.solve(max_iter=45, tol=0.01, mode="buckling_max", alpha_buckling=float(alpha_in), progress_callback=update_progress)
+            simp_res = optimizer.solve(max_iter=45, tol=0.01, mode="buckling_max", alpha_buckling=float(alpha_in), nEig=int(nEig_in), progress_callback=update_progress)
             progress_text.empty()
             progress_bar.empty()
 
@@ -223,7 +235,7 @@ def render_main_visualization(optimizer, simp_res):
         res=simp_res,
         threshold=dens_threshold,
         view_style=view_style_choice,
-        colormap="Jet",
+        colormap="Jet_r",
         smooth=smooth_viz
     )
     st.plotly_chart(fig_plot, use_container_width=True)
@@ -290,15 +302,15 @@ if simp_res is not None and simp_res.success and optimizer is not None:
                 for lx, ly, fx, fy in loads_simp:
                     opt_clone.add_load(lx, ly, fx=fx, fy=fy)
 
-                res_alpha = opt_clone.solve(max_iter=45, tol=0.01, mode="buckling_max", alpha_buckling=a)
+                res_alpha = opt_clone.solve(max_iter=45, tol=0.01, mode="buckling_max", alpha_buckling=a, nEig=int(nEig_in))
                 
                 if res_alpha.success:
                     with placeholders[i].container():
                         st.markdown(f"**α = {a:.1f}**")
                         st.caption(f"C: {res_alpha.compliance:.1f} N·mm | BLF: {res_alpha.blf_history[-1] if res_alpha.blf_history else 'N/A':.3f}")
-                        # We use smooth=False and threshold=0.40 for the pareto sweep as defaults, 
+                        # We use smooth=True and threshold=0.40 for the pareto sweep as defaults, 
                         # to ensure stability regardless of the upper fragment's local variables
-                        f_plot = opt_clone.to_scientific_figures(res=res_alpha, threshold=0.40, view_style="silhouette_bw", smooth=False)
+                        f_plot = opt_clone.to_scientific_figures(res=res_alpha, threshold=0.40, view_style="silhouette_bw", smooth=True)
                         f_plot.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10))
                         st.plotly_chart(f_plot, use_container_width=True)
                 
