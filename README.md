@@ -1,89 +1,81 @@
-# 2D Continuum SIMP Topology Optimization with Linearized Buckling Analysis (LBA)
+# 2D topology optimization with linearized buckling analysis
 
-Un motore scientifico di **Ottimizzazione Topologica 2D nel continuo** basato sul metodo **SIMP a tre campi** (*Design $\to$ Density Filter $\to$ Heaviside Projection*) accoppiato ad **Analisi di Buckling Linearizzato (LBA)**, aggregazione multimodale di **Kreisselmeier-Steinhauser (KS)** e scalarizzazione multi-obiettivo di Pareto, dotato di interfaccia interattiva **Streamlit**.
+2D continuum topology optimization solver based on the three-field SIMP method (design variables -> spatial filter -> Heaviside projection), coupled with linearized buckling analysis (LBA), Kreisselmeier-Steinhauser (KS) multi-modal aggregation, and Pareto multi-objective scalarization. Includes an interactive Streamlit dashboard and a discrete ground structure truss solver.
 
----
+## Implemented features
 
-## Caratteristiche Principali e Implementazioni Fisiche
+- Vectorized Q4 plane stress FEM (`physics_engine/simp_engine_2d.py`):
+  - 4-node bilinear quadrilateral elements with pre-computed 2x2 Gauss stiffness matrix ($k_0$).
+  - Sparse CSC assembly (`scipy.sparse.csc_matrix`) and reusable sparse LU factorization (`scipy.sparse.linalg.factorized`), computed once per iteration and shared across static equilibrium, shift-invert Arnoldi iterations, and adjoint solves.
+- Three-field SIMP and exact chain rule:
+  - Cone density filter ($\tilde{x} = Hx / H_s$) followed by a smoothed Heaviside projection ($x_{\text{Phys}}$) with automatic $\beta$-continuation.
+  - Full chain rule applied to both objective sensitivities ($\partial f / \partial x_e$) and volume sensitivities ($\partial V / \partial x_e$).
+  - Optimality criteria (OC) bisection loop evaluating the true projected physical volume at every sub-iteration, with support for passive solid and void regions.
+- Linearized buckling analysis (LBA) and KS aggregation:
+  - Geometric stiffness matrix $K_G(x_{\text{Phys}}, u)$ assembled from the non-linear Green-Lagrange strain tensor ($u_{,x}^2 + v_{,x}^2$) using pre-computed centroidal matrices ($T_x, T_y, T_{xy}$).
+  - Differential penalization ($p_G = 6 > p_K = 3$ and zero geometric stiffness in void regions) to suppress spurious buckling modes in low-density elements.
+  - Option to optimize either the fundamental mode ($n_{\text{eig}} = 1$) or the Kreisselmeier-Steinhauser (KS) multi-modal aggregate ($n_{\text{eig}} > 1$) to avoid mode switching when eigenvalues coalesce.
+- Pareto trade-off and post-processing (`app.py`):
+  - Continuous weighting $\alpha$ between compliance ($C$) and critical buckling load factor ($\text{BLF} = \lambda_1$) using dynamic $L_1$ gradient normalization.
+  - Automated Pareto frontier sweep across $\alpha \in [0, 1]$.
+  - Dual-view visualization: black-and-white structural layout alongside a void-masked minimum principal stress ($\sigma_{II}$) map (`Jet_r` colormap: red for compression, blue for tension).
 
-- ** Solutore FEM Q4 Plane Stress Vettorializzato (`physics_engine/simp_engine_2d.py`)**:
-  - Elementi quadrilateri bilineari isoparametrici a 4 nodi (Q4) con integrazione di Gauss $2 \times 2$ pre-calcolata ($\mathbf{k}_0$).
-  - Assemblaggio sparso veloce (`scipy.sparse.csc_matrix`) e **fattorizzazione LU sparsa riusabile** (`scipy.sparse.linalg.factorized`), calcolata una sola volta per iterazione e condivisa tra l'equilibrio elastico e tutti gli $n_{\text{eig}}$ sistemi aggiunti.
-- ** Formulazione SIMP a Tre Campi & Chain Rule Esatta**:
-  - Filtro spaziale conico sulle densità ($\tilde{\mathbf{x}} = \mathbf{H}\mathbf{x} / \mathbf{H}_s$) seguito da proiezione regolarizzata di **Heaviside** ($\hat{\mathbf{p}}$) con continuazione automatica del parametro di nitidezza $\beta$.
-  - Applicazione rigorosa della **Regola della Catena (Chain Rule)** sia sul gradiente dell'obiettivo ($\partial F / \partial x_e$) sia sul gradiente del volume ($\partial V / \partial x_e$).
-  - Ciclo di bisezione **Optimality Criteria (OC)** con verifica esatta del vincolo sul **volume fisico proiettato** $\hat{\mathbf{p}}(\tilde{\mathbf{x}}(\mathbf{x}_{\text{new}}))$ ad ogni sotto-iterazione.
-- ** Analisi di Buckling Linearizzato (LBA) & Aggregazione KS**:
-  - Matrice di rigidezza geometrica $\mathbf{G}(\hat{\mathbf{p}}, \mathbf{u})$ derivata rigorosamente dal tensore di deformazione non lineare di **Green-Lagrange** ($u_{,x}^2 + v_{,x}^2$) mediante matrici binarie baricentriche pre-calcolate ($\mathbf{T}_x, \mathbf{T}_y, \mathbf{T}_{xy}$).
-  - Penalizzazione differenziata ($E_K$ con $E_{\min}=10^{-9}$, $E_G = E_0 \hat{p}_e^3$) per sopprimere i modi spuri nelle regioni di vuoto.
-  - Scelta da interfaccia tra **Modo Fondamentale ($n_{\text{eig}}=1$, Weighted Sum)** e **Aggregatore Multimodale di Kreisselmeier-Steinhauser ($n_{\text{eig}}>1$, KS Aggregator)** per prevenire l'instabilità numerica da *mode-switching* negli autovalori ravvicinati.
-- ** Frontiera di Pareto & Post-Processing Scientifico (`app.py`)**:
-  - Trade-off continuo $\alpha \in [0, 0.90]$ tra cedevolezza elastica ($C$) e stabilità a carico di punta ($\text{BLF} = \lambda_1$) con normalizzazione dinamica $L_1$ dei gradienti ad ogni iterazione.
-  - Generazione automatica a posteriori della **Frontiera di Pareto** ($\alpha \in [0.0, 1.0]$) con rendering *smooth* dei contorni strutturali.
-  - Mappe delle tensioni principali minime ($\sigma_{II}$) mascherate sul solido con scala cromatica accademica **`Jet_r`** (**Rosso** = Compressione / rischio buckling, **Blu** = Trazione).
+## Man-in-the-loop development workflow
 
----
-
-## Workflow di Sviluppo: Paradigma "Man-in-the-Loop" (Vibe Coding Scientifico)
-
-Il codice è stato sviluppato adottando una rigorosa metodologia **Human-in-the-Loop (Man-in-the-Loop)**, in cui la direzione teorica, matematica e di validazione fisica risiede interamente nel ricercatore umano, mentre l'agente IA opera esclusivamente come traduttore sintattico e implementatore numerico.
-
-```mermaid
-flowchart TD
-    H1["1. Formulazione Teorica (Man-in-the-Loop)<br/>Studio della letteratura (Sigmund, Ferrari, Wang)<br/>Derivazione analitica FEM, LBA, Adjoint e Chain Rule"]
-    H2["2. Prompting Ingegneristico Rigoroso<br/>Specifica di equazioni matriciali, vincoli fisici<br/>e architettura algoritmica (OC / KS / Pareto)"]
-    AI["3. Implementazione & Traduzione Sintattica (AI Agent)<br/>Vettorializzazione NumPy/SciPy, assemblaggio sparso,<br/>fattorizzazione LU e interfaccia Streamlit/Plotly"]
-    VAL["4. Validazione Fisica & Peer-Review Critica (Man-in-the-Loop)<br/>Verifica analitica, controllo del tensore Green-Lagrange,<br/>verifica Chain Rule Heaviside e conservazione del volume"]
-
-    H1 --> H2
-    H2 --> AI
-    AI --> VAL
-    VAL -- "Errore Sintattico / Numerico<br/>(Debug & Refactoring)" --> AI
-    VAL -- "Discrepanza Fisica / Matematica<br/>(Revisione Equazioni e Teoria)" --> H1
-```
-
-### Ruoli nel Ciclo Man-in-the-Loop
-1. **Ricercatore Umano (Controllo Teorico e Validazione)**:
-   - Selezione critica della letteratura scientifica (*Ferrari et al., 2021*; *Marler & Arora, 2004*; *Wang et al., 2011*).
-   - Formulazione matematica delle derivate aggiunte per il buckling, della normalizzazione dinamica multi-obiettivo e della regola della catena sul filtro di Heaviside.
-   - Revisione critica riga per riga del codice generato (es. correzione del tensore geometrico di Green-Lagrange $u_{,x}^2 + v_{,x}^2$ e imposizione del controllo sul volume fisico $\hat{\mathbf{p}}$ nel ciclo di bisezione OC).
-2. **Agente IA (Esecuzione Software e Vettorializzazione)**:
-   - Traduzione delle equazioni matriciali in codice Python vettorializzato (`numpy.einsum`, `scipy.sparse`).
-   - Ottimizzazione dei colli di bottiglia computazionali (pre-fattorizzazione `sla.factorized(K_free)` per i vettori aggiunti).
-   - Realizzazione della dashboard interattiva Streamlit e della suite di test automatizzati (`pytest`).
-
----
-
-## Struttura della Repository
+This repository was developed with a strict human-in-the-loop approach: mathematical formulation, literature selection, and physical validation are handled by the engineer, while the AI agent is used strictly for code translation, vectorization, and UI wiring.
 
 ```text
-├── app.py                          # Dashboard interattiva Streamlit (SIMP 2D, LBA, KS, Pareto Sweep)
-├── Documentation.md                # Documentazione teorica completa con tutte le equazioni implementate
-├── Documentation.tex               # Versione LaTeX della documentazione teorica
-├── AGENTS.md                       # Standard operativi e regole fisiche/numeriche del progetto
-├── requirements.txt                # Dipendenze Python
+[1. Theoretical formulation (human)]
+   Literature review (Sigmund, Ferrari, Wang, Marler & Arora)
+   Analytical derivation of FEM, LBA, adjoint sensitivities, and Heaviside chain rule
+        |
+        v
+[2. Engineering specification (human)]
+   Definition of matrix equations, boundary conditions, and algorithmic structure (OC / KS / Pareto)
+        |
+        v
+[3. Code implementation & vectorization (AI)]
+   Translation into vectorized NumPy/SciPy routines, sparse LU caching, and Streamlit UI
+        |
+        v
+[4. Physical validation & code review (human)]
+   Verification against closed-form benchmarks, Green-Lagrange tensor check,
+   chain-rule consistency check, and exact physical volume conservation in OC
+        |
+        +---> Numerical or syntax bug ----------> back to [3. Code implementation (AI)]
+        +---> Physical or mathematical issue ---> back to [1. Theoretical formulation (human)]
+```
+
+## Repository structure
+
+```text
+├── app.py                          # Streamlit dashboard (2D SIMP, LBA, KS, Pareto sweep)
+├── Documentation.md                # Theoretical documentation with all implemented equations
+├── Documentation.tex               # LaTeX source of the theoretical documentation
+├── AGENTS.md                       # Project rules and numerical standards
+├── requirements.txt                # Python dependencies
 ├── physics_engine/
-│   ├── simp_engine_2d.py           # Motore FEM Q4 + SIMP 3-campi + Buckling LBA + KS Aggregator
-│   ├── ground_structure.py         # Solutore reticolare discreto (Ground Structure Method via LP)
+│   ├── simp_engine_2d.py           # Q4 FEM + 3-field SIMP + LBA + KS aggregator
+│   ├── ground_structure.py         # Discrete truss ground structure solver
 │   └── __init__.py
 └── tests/
-    ├── test_simp_engine.py         # Unit test su matrici di rigidezza, convergenza OC e volume fisico
+    ├── test_simp_engine.py         # Unit tests for stiffness, OC convergence, and volume constraint
     └── test_case_study_ground_structure.py
 ```
 
----
+## Quick start
 
-## Avvio Rapido
+Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-1. **Installazione dipendenze**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. **Avvio della Dashboard interattiva**:
-   ```bash
-   python -m streamlit run app.py
-   ```
-3. **Esecuzione dei test di validazione**:
-   ```bash
-   pytest tests/test_simp_engine.py
-   ```
+Run the interactive dashboard:
+```bash
+python -m streamlit run app.py
+```
+
+Run validation tests:
+```bash
+pytest tests/
+```
