@@ -1,0 +1,186 @@
+\documentclass[11pt, a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath, amssymb}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{hyperref}
+\usepackage{titlesec}
+
+\title{Theoretical Documentation: 2D Topology Optimization Engine}
+\author{Computational Engineering Project}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+This document details the mathematical, physical, and numerical foundations of the 2D Topology Optimization and Ground Structure engine implemented in \texttt{physics\_engine/simp\_engine\_2d.py} and \texttt{physics\_engine/ground\_structure.py}. All formulations strictly enforce a coherent structural unit system: lengths in millimeters ($\text{mm}$), forces in Newtons ($\text{N}$), stresses and elastic moduli in MegaPascals ($\text{MPa} = \text{N/mm}^2$), and displacements in millimeters ($\text{mm}$).
+
+\section{Topology Invariance under Load Reversal}
+In purely linear elastic compliance minimization, applying a force $\mathbf{F}$ or its exact opposite $-\mathbf{F}$ yields an identical optimized topology. This is a direct mathematical consequence of linear elasticity theory.
+
+The material behavior is governed by Hooke's Law:
+\begin{equation}
+    \mathbf{K}(\boldsymbol{\rho}) \mathbf{u} = \mathbf{F}
+\end{equation}
+where $\mathbf{K}$ is the global stiffness matrix, $\mathbf{u}$ is the nodal displacement vector, and $\mathbf{F}$ is the external force vector. Reversing the load to $-\mathbf{F}$ produces an exactly opposite displacement field $-\mathbf{u}$.
+
+The standard SIMP optimizer minimizes compliance (strain energy $C$), defined as the external work:
+\begin{equation}
+    C = \mathbf{F}^T \mathbf{u}
+\end{equation}
+Substituting the reversed vectors:
+\begin{equation}
+    C_{\text{new}} = (-\mathbf{F})^T (-\mathbf{u}) = \mathbf{F}^T \mathbf{u} = C
+\end{equation}
+The element strain energy depends on the quadratic form $\mathbf{u}_e^T \mathbf{k}_0 \mathbf{u}_e$, remaining strictly invariant to load direction. Breaking this symmetry requires introducing geometric non-linearities such as Linearized Buckling Analysis (LBA), which penalizes compressive stress states ($\sigma_{II} < 0$) differently from tensile stress states ($\sigma_I > 0$).
+
+\section{Finite Element Method (FEM) Formulation}
+The rectangular design domain of dimensions $L \times H$ is discretized into a regular Cartesian mesh of $\text{nelx} \times \text{nely}$ square elements of side $h_e = 1\,\text{mm}$ and unit out-of-plane thickness $t = 1\,\text{mm}$.
+
+\subsection{Q4 Plane Stress Element}
+The solver uses a 4-node isoparametric bilinear quadrilateral element (Q4) under plane stress conditions:
+\begin{itemize}
+    \item \textbf{Degrees of Freedom (DOF):} Each of the 4 nodes has 2 translational DOFs ($u_x, u_y$), totaling 8 DOFs per element and $2(\text{nelx}+1)(\text{nely}+1)$ global DOFs.
+    \item \textbf{Plane Stress Constitutive Law:} Out-of-plane stress components ($\sigma_{zz}, \tau_{xz}, \tau_{yz}$) vanish, and the isotropic constitutive matrix $\mathbf{D}_0$ is:
+    \begin{equation}
+        \mathbf{D}_0 = \frac{E_0}{1 - \nu^2}
+        \begin{bmatrix}
+        1 & \nu & 0 \\
+        \nu & 1 & 0 \\
+        0 & 0 & \frac{1-\nu}{2}
+        \end{bmatrix}
+    \end{equation}
+\end{itemize}
+
+\subsection{Pre-Computed Element Stiffness Matrix ($\mathbf{k}_0$)}
+Using exact $2 \times 2$ Gauss-Legendre quadrature over the natural domain $(\xi, \eta) \in [-1, 1]^2$, the symmetric $8 \times 8$ baseline element stiffness matrix $\mathbf{k}_0$ at unit Young's modulus ($E_0 = 1$) is evaluated analytically in closed form (\texttt{\_lk()}):
+\begin{equation}
+    \mathbf{k}_0 = \int_{-1}^1 \int_{-1}^1 \mathbf{B}^T(\xi,\eta) \mathbf{D}_0 \mathbf{B}(\xi,\eta) \det(\mathbf{J}) \, d\xi \, d\eta
+\end{equation}
+Because the mesh is regular, $\mathbf{k}_0$ and the centroidal strain-displacement matrix $\mathbf{D}\mathbf{B}_0 = \mathbf{D}_0 \mathbf{B}(0,0)$ are pre-computed once at initialization and vectorized across all elements.
+
+\section{Three-Field SIMP Method (Density + Filter + Heaviside Projection)}
+To prevent numerical instabilities (checkerboard patterns and mesh dependency) while achieving crisp $0/1$ solid-void boundaries without intermediate grey transition zones, the solver implements the \textbf{Three-Field SIMP scheme}:
+\begin{equation}
+    \mathbf{x} \quad \xrightarrow{\text{Cone Filter } \mathbf{H}} \quad \tilde{\mathbf{x}} \quad \xrightarrow{\text{Heaviside Projection } \beta, \eta} \quad \hat{\mathbf{x}} \equiv \mathbf{x}_{\text{Phys}}
+\end{equation}
+
+\subsection{Field 1: Mathematical Design Variables ($\mathbf{x}$)}
+Each element $e$ is assigned a continuous mathematical design variable $x_e \in [0, 1]$, updated by the Optimality Criteria (OC) optimizer.
+
+\subsection{Field 2: Spatial Cone Filter ($\tilde{\mathbf{x}}$)}
+A pre-assembled sparse convolution operator $\mathbf{H}$ with radius $r_{\min}$ smooths the design variables into the filtered density field $\tilde{\mathbf{x}}$:
+\begin{equation}
+    \tilde{x}_e = \frac{\sum_{i \in \mathcal{N}_e} H_{ei} x_i}{\sum_{i \in \mathcal{N}_e} H_{ei}}, \qquad H_{ei} = \max\big(0,\, r_{\min} - \text{dist}(e, i)\big)
+\end{equation}
+
+\subsection{Field 3: Smooth Heaviside Projection ($\mathbf{x}_{\text{Phys}}$)}
+To eliminate blurred boundaries caused by linear spatial filtering, $\tilde{x}_e$ is projected through a regularized smoothed Heaviside step function centered at threshold $\eta = 0.5$ with sharpness parameter $\beta$:
+\begin{equation}
+    x_{\text{Phys}, e}(\tilde{x}_e) = \frac{\tanh(\beta \eta) + \tanh\!\big(\beta (\tilde{x}_e - \eta)\big)}{\tanh(\beta \eta) + \tanh\!\big(\beta (1 - \eta)\big)}
+\end{equation}
+with exact analytical derivative with respect to the filtered density:
+\begin{equation}
+    \frac{\partial x_{\text{Phys}, e}}{\partial \tilde{x}_e} = \frac{\beta \left(1 - \tanh^2\!\big(\beta (\tilde{x}_e - \eta)\big)\right)}{\tanh(\beta \eta) + \tanh\!\big(\beta (1 - \eta)\big)}
+\end{equation}
+A continuation strategy gradually ramps $\beta$ from $\beta = 1.0$ (quasi-linear filter) up to $\beta_{\max} = 8.0$ (doubling every 25 iterations after iteration 25), allowing the topology to form smoothly before snapping to a binary $0/1$ structure.
+
+\subsection{Consistent Chain Rule for Objective and Volume Sensitivities}
+All physical properties (elastic stiffness $\mathbf{K}$, geometric stiffness $\mathbf{K}_G$, and total volume $V = \sum_e x_{\text{Phys}, e}$) are evaluated strictly on the physical field $\mathbf{x}_{\text{Phys}}$. By the multivariable Chain Rule, any sensitivity $\frac{\partial f}{\partial x_{\text{Phys}, e}}$ (for both the objective $f$ and the volume constraint $V$) is mapped back to the mathematical design variables $x_i$ via the adjoint transpose filter operator:
+\begin{equation}
+    \frac{\partial f}{\partial x_i} = \sum_{e \in \mathcal{N}_i} \frac{H_{ie}}{\sum_{k} H_{ek}} \left( \frac{\partial f}{\partial x_{\text{Phys}, e}} \cdot \frac{\partial x_{\text{Phys}, e}}{\partial \tilde{x}_e} \right)
+\end{equation}
+
+\subsection{SIMP Material Interpolation and Optimality Criteria (OC) Bisection}
+The elastic stiffness of element $e$ follows the penalized interpolation law:
+\begin{equation}
+    E_e(x_{\text{Phys}, e}) = E_{\min} + x_{\text{Phys}, e}^{p} (E_0 - E_{\min}), \qquad E_{\min} = 10^{-9} E_0, \quad p = 3.0
+\end{equation}
+In the Optimality Criteria (OC) update loop, the Lagrange multiplier $\lambda_{\text{bisect}}$ is determined via bisection over $[0, 10^9]$:
+\begin{equation}
+    B_e = \sqrt{\max\!\left(0,\, -\frac{\partial f / \partial x_e}{\lambda_{\text{bisect}} \, (\partial V / \partial x_e)}\right)}, \qquad x_e^{\text{new}} = \text{clip}\!\left(x_e B_e,\, \max(0, x_e - m),\, \min(1, x_e + m)\right)
+\end{equation}
+Crucially, at every step of the bisection search, the candidate design vector $\mathbf{x}^{\text{new}}$ is passed through both the spatial filter $\mathbf{H}$ and the Heaviside projection to verify the \textbf{true physical volume} $\frac{1}{N_e}\sum_e x_{\text{Phys}, e}^{\text{new}} = V_f$ to machine precision, while enforcing passive solid ($\text{pasS} = 1$) and passive void ($\text{pasV} = 0$) masks.
+
+\section{Linearized Buckling Analysis (LBA) \& Multi-Modal KS Aggregation}
+Following Ferrari, Sigmund, and Guest (2021) \cite{ferrari2021}, the solver implements vectorized Continuum SIMP buckling with multi-eigenvalue aggregation.
+
+\subsection{Exact Green-Lagrange Geometric Stiffness Matrix ($\mathbf{K}_G$)}
+Buckling is governed by the Generalized Eigenvalue Problem (GEVP):
+\begin{equation}
+    \left( \mathbf{K}(\mathbf{x}_{\text{Phys}}) + \lambda \mathbf{K}_G(\mathbf{x}_{\text{Phys}}, \mathbf{u}) \right) \boldsymbol{\phi} = \mathbf{0} \quad \Longleftrightarrow \quad \mathbf{K}_G \boldsymbol{\phi}_i = \mu_i \mathbf{K} \boldsymbol{\phi}_i, \quad \mu_i = \frac{1}{\lambda_i}
+\end{equation}
+From the non-linear Green-Lagrange strain energy evaluated at the Q4 centroid ($\xi = 0, \eta = 0$), the elemental geometric stiffness matrix $\mathbf{k}_{G,e}$ is decomposed into three constant $8 \times 8$ base matrices $\mathbf{T}_x, \mathbf{T}_y, \mathbf{T}_{xy}$ constructed from the shape function gradient blocks $\mathbf{G}_x, \mathbf{G}_y$:
+\begin{equation}
+    \mathbf{k}_{G,e}(\boldsymbol{\sigma}_e) = x_{\text{Phys}, e}^{p_G} \left( \sigma_{x,e} \mathbf{T}_x + \sigma_{y,e} \mathbf{T}_y + \tau_{xy,e} \mathbf{T}_{xy} \right)
+\end{equation}
+This allows the global sparse matrix $\mathbf{K}_G \in \mathbb{R}^{N_{\text{dof}} \times N_{\text{dof}}}$ to be assembled in pure vectorized NumPy array operations without element loops.
+
+\subsection{Differential Penalization ($p_G > p_K$) against Spurious Void Modes}
+In low-density void regions ($x_{\text{Phys}, e} \to 0$), artificial localized buckling modes emerge if elastic and geometric stiffness scale identically. By penalizing $\mathbf{K}_G$ with exponent $p_G = 6.0 > p_K = 3.0$ and zeroing out geometric stiffness contribution below the void cut-off ($E_G = x_{\text{Phys}, e}^{p_G}$ with no $E_{\min}$ offset), the local quotient $\mathbf{K}_e / \mathbf{K}_{G,e} \propto x_{\text{Phys}, e}^{p_K - p_G} = x_{\text{Phys}, e}^{-3} \to \infty$ as $x_{\text{Phys}, e} \to 0$. Spurious void modes are pushed to infinite critical loads and eliminated from the fundamental spectrum.
+
+\subsection{Shift-Invert Arnoldi Eigensolver with Pre-Factorized Sparse LU}
+To extract the $N_{\text{eig}} = 4$ most critical buckling modes ($\mu_1 \ge \mu_2 \ge \dots \ge \mu_{N_{\text{eig}}} > 0$, corresponding to the smallest positive Buckling Load Factors $\text{BLF}_i = 1/\mu_i$), the solver uses ARPACK (\texttt{scipy.sparse.linalg.eigsh(..., which='LM')}) with a Shift-Invert LinearOperator. Crucially, the free-DOF elastic stiffness matrix $\mathbf{K}_{\text{free}}$ is factorized \textbf{once per iteration} via SuperLU (\texttt{sla.factorized(K\_free)}), and this single LU decomposition is reused across:
+\begin{enumerate}
+    \item Every Arnoldi iteration of \texttt{eigsh} ($\mathbf{v} \mapsto \mathbf{K}_{\text{free}}^{-1} \mathbf{K}_{G,\text{free}} \mathbf{v}$), and
+    \item All $N_{\text{eig}}$ adjoint equilibrium solves ($\mathbf{K}_{\text{free}} \mathbf{w}_i = \mathbf{r}_{\text{adj}, i}$).
+\end{enumerate}
+
+\subsection{Kreisselmeier-Steinhauser (KS) Aggregation \& Adjoint Sensitivity}
+Optimizing only the single lowest eigenvalue $\lambda_1$ suffers from non-differentiable mode switching whenever $\mu_1(\mathbf{x}) = \mu_2(\mathbf{x})$ during structural evolution. To guarantee a $C^\infty$-smooth gradient across mode crossings, the first $N_{\text{eig}} = 4$ eigenvalues are aggregated via the log-sum-exp stabilized \textbf{Kreisselmeier-Steinhauser (KS)} function with aggregation parameter $\rho_{\text{KS}} = 50$:
+\begin{equation}
+    J_{\text{KS}}(\boldsymbol{\mu}) = \mu_1 + \frac{1}{\rho_{\text{KS}}} \ln \left( \sum_{i=1}^{N_{\text{eig}}} \exp\!\big(\rho_{\text{KS}} (\mu_i - \mu_1)\big) \right)
+\end{equation}
+with automatic modal weights:
+\begin{equation}
+    w_{\text{KS}, i} = \frac{\exp\!\big(\rho_{\text{KS}} (\mu_i - \mu_1)\big)}{\sum_{j=1}^{N_{\text{eig}}} \exp\!\big(\rho_{\text{KS}} (\mu_j - \mu_1)\big)}, \qquad \sum_{i=1}^{N_{\text{eig}}} w_{\text{KS}, i} = 1
+\end{equation}
+For each mode $\boldsymbol{\phi}_i$ normalized to unit elastic energy ($\boldsymbol{\phi}_i^T \mathbf{K} \boldsymbol{\phi}_i = 1$), the exact sensitivity $\frac{\partial \mu_i}{\partial x_{\text{Phys}, e}}$ is computed via the Adjoint Method, including the stress-displacement coupling vector $\mathbf{w}_i$:
+\begin{equation}
+    \frac{\partial J_{\text{KS}}}{\partial x_{\text{Phys}, e}} = \sum_{i=1}^{N_{\text{eig}}} w_{\text{KS}, i} \left( \boldsymbol{\phi}_{i,e}^T \frac{\partial \mathbf{k}_{G,e}}{\partial x_{\text{Phys}, e}} \boldsymbol{\phi}_{i,e} - \mu_i \boldsymbol{\phi}_{i,e}^T \frac{\partial \mathbf{k}_{E,e}}{\partial x_{\text{Phys}, e}} \boldsymbol{\phi}_{i,e} - \mathbf{w}_{i,e}^T \frac{\partial \mathbf{k}_{E,e}}{\partial x_{\text{Phys}, e}} \mathbf{u}_e \right)
+\end{equation}
+
+\subsection{Multi-Objective Pareto Scalarization}
+Following Marler \& Arora (2004) \cite{marler2004}, the compliance gradient $\mathbf{g}_c = \frac{\partial C}{\partial \mathbf{x}}$ and the KS buckling gradient $\mathbf{g}_{\text{KS}} = \frac{\partial J_{\text{KS}}}{\partial \mathbf{x}}$ are normalized by their $L_1$ norms after applying the Three-Field Chain Rule, and combined via the coupling weight $\alpha \in [0, 0.85]$:
+\begin{equation}
+    s_{\text{eff}, e} = (1 - \alpha) \frac{g_{c, e}}{\|\mathbf{g}_c\|_1} + \alpha \frac{\min(0, g_{\text{KS}, e})}{\|\min(0, \mathbf{g}_{\text{KS}})\|_1}
+\end{equation}
+Furthermore, during the initial iterations ($\text{loop} \le 10$) when the density distribution is still diffuse, $\alpha_{\text{eff}}$ is smoothly ramped from $0 \to \alpha$ so that primary load-transfer paths form before anti-buckling cross-bracing and compressed-chord thickening are sculpted.
+
+\section{Scientific Visualization and Principal Stress Dual-View}
+For each Q4 element, the centroidal Cauchy stress vector $\boldsymbol{\sigma}_e = [\sigma_{x,e}, \sigma_{y,e}, \tau_{xy,e}]^T = \mathbf{D}_0 \mathbf{B}_0 \mathbf{u}_e$ is transformed into the in-plane principal stresses via Mohr's circle:
+\begin{equation}
+    \sigma_{I, e} = \frac{\sigma_{x,e} + \sigma_{y,e}}{2} + \sqrt{\left(\frac{\sigma_{x,e} - \sigma_{y,e}}{2}\right)^2 + \tau_{xy,e}^2}, \qquad
+    \sigma_{II, e} = \frac{\sigma_{x,e} + \sigma_{y,e}}{2} - \sqrt{\left(\frac{\sigma_{x,e} - \sigma_{y,e}}{2}\right)^2 + \tau_{xy,e}^2}
+\end{equation}
+The interactive post-processor provides a synchronized Dual-View:
+\begin{enumerate}
+    \item \textbf{Binary B\&W Solid Silhouette:} Renders solid structural elements ($x_{\text{Phys}, e} \ge \rho_{\text{threshold}}$) in high-contrast black over white.
+    \item \textbf{Void-Blanked Minimum Principal Stress ($\sigma_{II}$):} Masks void elements as $\text{NaN}$ (transparent white) and applies the inverted \texttt{Jet\_r} colormap exclusively to load-bearing members, highlighting regions of intense compression ($\sigma_{II} \ll 0$) in red/orange and neutral/tensile chords ($\sigma_{II} \approx 0$) in dark blue.
+\end{enumerate}
+
+\begin{thebibliography}{9}
+\bibitem{ferrari2021} 
+Ferrari, F., Sigmund, O., \& Guest, J. K. (2021). 
+\textit{Topology optimization with linearized buckling criteria in 250 lines of Matlab}. 
+Structural and Multidisciplinary Optimization, 63, 3045--3066.
+
+\bibitem{sigmund2001}
+Sigmund, O. (2001).
+\textit{A 99 line topology optimization code written in Matlab}.
+Structural and Multidisciplinary Optimization, 21(2), 120--127.
+
+\bibitem{bendsoe2004}
+Bends{\o}e, M. P., \& Sigmund, O. (2004).
+\textit{Topology Optimization: Theory, Methods, and Applications}.
+Springer Science \& Business Media.
+
+\bibitem{marler2004}
+Marler, R. T., \& Arora, J. S. (2004). 
+\textit{Survey of multi-objective optimization methods for engineering}. 
+Structural and Multidisciplinary Optimization, 26(6), 369--395.
+\end{thebibliography}
+
+\end{document}
