@@ -21,7 +21,7 @@ from physics_engine.simp_engine_2d import SIMPOptimizer2D
 # Streamlit Page Setup
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Computational Engineering: Topology Optimization",
+    page_title="Topology Optimization: SIMP & Buckling Analysis",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -65,7 +65,7 @@ st.markdown("""
 # -----------------------------------------------------------------------------
 # Main Header
 # -----------------------------------------------------------------------------
-st.markdown('<div class="main-header">Computational Engineering: Topology Optimization</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">Topology Optimization: SIMP & Buckling Analysis</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">SIMP Continuous Domain Optimization with Linearized Buckling Analysis</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------

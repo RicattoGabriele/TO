@@ -1,5 +1,5 @@
 """
-Physics Engine Package - Deterministic Computational Engineering Core.
+Physics Engine Package - Deterministic Topology Optimization & FEA Core.
 """
 
 from .ground_structure import GroundStructure2D, Member2D, Node2D, GroundStructureResult
