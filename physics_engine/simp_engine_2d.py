@@ -128,6 +128,8 @@ class SIMPOptimizer2D:
         self.thickness = float(thickness)
         self.E0 = float(E0)
         self.Emin = float(Emin)
+        # Dimensionless void stiffness ratio Emin / E0 (default 1e-9) for exact E0 scale invariance
+        self.Emin_ratio = self.Emin if self.Emin <= 1e-4 else (self.Emin / self.E0)
         self.nu = float(nu)
         self.penal = float(penal)
         self.penal_g = 6.0
@@ -138,7 +140,7 @@ class SIMPOptimizer2D:
         self.num_nodes = (self.nelx + 1) * (self.nely + 1)
         self.num_dofs = 2 * self.num_nodes
 
-        # Element stiffness matrix k0
+        # Element stiffness matrix k0 (for unit Young's modulus E = 1.0)
         self.k0 = self._build_element_stiffness()
         self._init_buckling_matrices()
 
@@ -154,17 +156,16 @@ class SIMPOptimizer2D:
 
     def _build_element_stiffness(self) -> np.ndarray:
         """
-        Exact Q4 plane stress element stiffness matrix using 2x2 Gauss quadrature.
-        Returns 8x8 symmetric matrix.
+        Exact Q4 plane stress element stiffness matrix for unit Young's modulus (E = 1.0)
+        using 2x2 Gauss quadrature. Returns 8x8 symmetric matrix.
         """
-        E = self.E0
         nu = self.nu
         t = self.thickness
         dx = self.dx
         dy = self.dy
 
-        # Plane stress constitutive matrix D
-        factor = E / (1.0 - nu**2)
+        # Plane stress constitutive matrix D0 for unit Young's modulus (E = 1.0)
+        factor = 1.0 / (1.0 - nu**2)
         D = factor * np.array([
             [1.0, nu, 0.0],
             [nu, 1.0, 0.0],
@@ -210,8 +211,9 @@ class SIMPOptimizer2D:
 
 
     def _init_buckling_matrices(self):
-        nu, E0, dx, dy, t = self.nu, self.E0, self.dx, self.dy, self.thickness
-        factor = E0 / (1.0 - nu**2)
+        nu, dx, dy, t = self.nu, self.dx, self.dy, self.thickness
+        # Unit-modulus constitutive matrix Cmat0 (E = 1.0); E0 scaling is applied via E_G
+        factor = 1.0 / (1.0 - nu**2)
         self.Cmat0 = factor * np.array([[1.0, nu, 0.0], [nu, 1.0, 0.0], [0.0, 0.0, (1.0 - nu) / 2.0]], dtype=np.float64)
         
         dNdxi = np.array([-0.25, 0.25, 0.25, -0.25])
@@ -343,25 +345,137 @@ class SIMPOptimizer2D:
         self.force_vector[2 * nid] += fx
         self.force_vector[2 * nid + 1] += fy
 
+    def _compute_lba(
+        self,
+        U_e: np.ndarray,
+        xPhys: np.ndarray,
+        Emin_abs: float,
+        iK: np.ndarray,
+        jK: np.ndarray,
+        free_dofs: np.ndarray,
+        K_free: sp.csr_matrix,
+        solve_K,
+        nEig: int,
+        ks_rho: float,
+        compute_sens: bool = True,
+    ) -> Tuple[float, np.ndarray]:
+        """Computes Linearized Buckling Analysis (BLF) and optionally KS-aggregated sensitivity."""
+        sigma_e = (self.Cmat0 @ self.B0 @ U_e.T).T
+        Ge = (
+            sigma_e[:, 0, None, None] * self.Tx
+            + sigma_e[:, 1, None, None] * self.Ty
+            + sigma_e[:, 2, None, None] * self.Txy
+        )
+
+        # Stress stiffness penalization pG = 3.0 to prevent spurious void buckling
+        E_G = (xPhys ** 3.0) * self.E0
+        Ge_penalized = Ge * E_G[:, None, None]
+
+        G_full = sp.coo_matrix((Ge_penalized.flatten(), (iK, jK)), shape=(self.num_dofs, self.num_dofs)).tocsr()
+        G_free = G_full[free_dofs, :][:, free_dofs]
+
+        # Scale K_free to unit E0*t order during eigsh so ARPACK conditioning is strictly invariant to E0*t
+        scale_Kt = self.E0 * self.thickness
+        K_free_scaled = K_free / scale_Kt
+
+        try:
+            k_request = min(nEig + 4, G_free.shape[0] - 2)
+            v0_det = np.ones(G_free.shape[0], dtype=np.float64)
+            evals_scaled, evecs = sla.eigsh(
+                G_free, M=K_free_scaled, k=k_request, which='SA', tol=1e-4, v0=v0_det
+            )
+            evals = evals_scaled / scale_Kt
+            mu_all = -evals
+            idx_sort = np.argsort(mu_all)[::-1]
+            mu_all = mu_all[idx_sort]
+            evecs = evecs[:, idx_sort]
+
+            mu_active = mu_all[:nEig]
+            evecs_active = evecs[:, :nEig]
+
+            for i in range(nEig):
+                norm_phi = np.sqrt(np.maximum(1e-30, evecs_active[:, i] @ (K_free @ evecs_active[:, i])))
+                evecs_active[:, i] /= norm_phi
+                # Enforce deterministic eigenvector sign convention
+                max_idx = int(np.argmax(np.abs(evecs_active[:, i])))
+                if evecs_active[max_idx, i] < 0:
+                    evecs_active[:, i] = -evecs_active[:, i]
+        except Exception:
+            mu_active = np.array([1e-6 / scale_Kt] * nEig)
+            evecs_active = np.ones((len(free_dofs), nEig)) / np.sqrt(len(free_dofs))
+
+        mu_max = float(np.max(mu_active))
+        if nEig == 1:
+            mu_ks = mu_max
+            weights_ks = np.array([1.0])
+        else:
+            mu_scale = max(abs(mu_max), 1e-30)
+            rel_diff = (mu_active - mu_max) / mu_scale
+            sum_exp = np.sum(np.exp(ks_rho * rel_diff))
+            mu_ks = mu_max * (1.0 + (1.0 / ks_rho) * np.log(sum_exp))
+            weights_ks = np.exp(ks_rho * rel_diff) / sum_exp
+
+        blf = 1.0 / mu_ks if mu_ks > 1e-30 else 1e12
+
+        if not compute_sens:
+            return float(blf), np.zeros(self.num_elements, dtype=np.float64)
+
+        d_mu_ks = np.zeros(self.num_elements, dtype=np.float64)
+        for idx_m in range(nEig):
+            phi = np.zeros(self.num_dofs, dtype=np.float64)
+            phi[free_dofs] = evecs_active[:, idx_m]
+            phi_e = phi[self.edofMat]
+            mu_m = mu_active[idx_m]
+
+            phi_Ge_phi = np.einsum('ni,nij,nj->n', phi_e, Ge, phi_e)
+            term1 = phi_Ge_phi * 3.0 * self.E0 * (xPhys ** 2.0)
+
+            phi_Ke_phi = np.einsum('ni,ij,nj->n', phi_e, self.k0, phi_e)
+            term2 = mu_m * phi_Ke_phi * self.penal * (self.E0 - Emin_abs) * (xPhys ** (self.penal - 1.0))
+
+            P = np.column_stack([
+                np.einsum('ni,ij,nj->n', phi_e, self.Tx, phi_e),
+                np.einsum('ni,ij,nj->n', phi_e, self.Ty, phi_e),
+                np.einsum('ni,ij,nj->n', phi_e, self.Txy, phi_e)
+            ])
+            adj_L_e = (P @ (self.Cmat0 @ self.B0)) * E_G[:, None]
+            adj_L = np.zeros(self.num_dofs, dtype=np.float64)
+            np.add.at(adj_L, self.edofMat, adj_L_e)
+
+            w_free = solve_K(adj_L[free_dofs])
+            w = np.zeros(self.num_dofs, dtype=np.float64)
+            w[free_dofs] = w_free
+            w_e = w[self.edofMat]
+
+            term3 = np.sum((w_e @ self.k0) * U_e, axis=1) * self.penal * (self.E0 - Emin_abs) * (xPhys ** (self.penal - 1.0))
+
+            d_mu_m = -(term1 + term2 - term3)
+            d_mu_ks += weights_ks[idx_m] * d_mu_m
+
+        return float(blf), d_mu_ks
+
     def solve(
         self,
-        max_iter: int = 45,
+        max_iter: int = 100,
         tol: float = 0.01,
         mode: str = "compliance",
         alpha_buckling: float = 0.40,
         nEig: int = 1,
         ks_rho: float = 40.0,
-        progress_callback = None
+        progress_callback = None,
+        legacy_schedule: bool = False,
     ) -> SIMPResult:
         """
         Runs topology optimization.
         
         Args:
-            max_iter: Maximum number of iterations (default: 45)
+            max_iter: Maximum number of iterations (default: 100; legacy was 45)
             tol: Convergence tolerance on change in design variables (default: 0.01)
             mode: "compliance" for standard minimum compliance (symmetric under force reversal),
                   "buckling_max" for compliance + linearized buckling resistance (asymmetric, reinforces compressed chords).
             alpha_buckling: Weight factor for buckling sensitivity in [0.0, 1.0] when mode='buckling_max' (default: 0.40).
+            legacy_schedule: If True, uses the legacy frozen 45-iter schedule (beta = min(16, 2**(it//15)), undamped OC)
+                             for exact backward regression testing.
         """
         start_time = time.time()
         if len(self.fixed_dofs) < 3:
@@ -371,6 +485,7 @@ class SIMPOptimizer2D:
 
         x = np.full(self.num_elements, self.volfrac, dtype=np.float64)
         xPhys = x.copy()
+        Emin_abs = self.Emin_ratio * self.E0
 
         all_dofs = np.arange(self.num_dofs, dtype=np.int32)
         free_mask = np.ones(self.num_dofs, dtype=bool)
@@ -383,6 +498,11 @@ class SIMPOptimizer2D:
 
         c_history, ch_history, blf_history = [], [], []
         compliance, iterations = 0.0, 0
+        converged = False
+        alpha = float(np.clip(alpha_buckling, 0.0, 0.95)) if mode == "buckling_max" else 0.0
+
+        # Track last FEA state so we can evaluate final BLF if alpha == 0 in buckling_max mode
+        last_U_e, last_K_free, last_solve_K = None, None, None
 
         for it in range(1, max_iter + 1):
             iterations = it
@@ -390,16 +510,23 @@ class SIMPOptimizer2D:
                 progress_callback(it, max_iter)
                 
             # 0. Density Filtering and Heaviside Projection
-            # Continuation scheme: beta doubles every 15 iterations (max 16)
-            beta = min(16.0, 1.0 * (2.0 ** (it // 15)))
             eta = 0.5
+            if legacy_schedule:
+                # Legacy continuation scheme: beta doubles every 15 iterations (jumping at it=15, 30, 45)
+                beta = min(16.0, 1.0 * (2.0 ** (it // 15)))
+            else:
+                # Smooth continuation: step beta every 20 iterations, freezing projection at least
+                # 15 iterations before max_iter so the optimizer equilibrates without a final-step jump.
+                freeze_it = max(1, max_iter - 15)
+                eff_it = min(it, freeze_it)
+                beta = min(8.0, 1.0 * (2.0 ** ((eff_it - 1) // 20)))
             
             x_tilde = np.array(self.H @ x).flatten() / self.Hs
             denom = np.tanh(beta * eta) + np.tanh(beta * (1.0 - eta))
             xPhys = (np.tanh(beta * eta) + np.tanh(beta * (x_tilde - eta))) / denom
             
             # 1. Linear Elasticity FEA
-            E_elements = self.Emin + (xPhys ** self.penal) * (self.E0 - self.Emin)
+            E_elements = Emin_abs + (xPhys ** self.penal) * (self.E0 - Emin_abs)
             sK = (self.k0.flatten()[np.newaxis, :] * E_elements[:, np.newaxis]).flatten()
 
             K_full = sp.coo_matrix((sK, (iK, jK)), shape=(self.num_dofs, self.num_dofs)).tocsr()
@@ -416,103 +543,39 @@ class SIMPOptimizer2D:
             compliance = float(np.sum(E_elements * ce))
             c_history.append(compliance)
 
+            last_U_e, last_K_free, last_solve_K = U_e, K_free, solve_K
+
             # Compliance sensitivity: dC/dx_e = - penal * (E0 - Emin) * x^(penal - 1) * ce
-            dc_comp = -self.penal * (self.E0 - self.Emin) * (xPhys ** (self.penal - 1.0)) * ce
+            dc_comp = -self.penal * (self.E0 - Emin_abs) * (xPhys ** (self.penal - 1.0)) * ce
+            scale_comp = float(np.mean(np.abs(dc_comp)))
+            if scale_comp < 1e-30:
+                scale_comp = 1.0
+            sens_comp = dc_comp / scale_comp
 
-            if mode == "compliance":
-                sens_total = dc_comp
+            if mode == "compliance" or alpha == 0.0:
+                # When alpha == 0.0, buckling sensitivity has zero weight; skip eigsh inside the loop
+                sens_total = sens_comp
             else:
-                # 2. Linearized Buckling Analysis (LBA) and Geometric Stiffness G
-                sigma_e = (self.Cmat0 @ self.B0 @ U_e.T).T
-                Ge = sigma_e[:, 0, None, None] * self.Tx + sigma_e[:, 1, None, None] * self.Ty + sigma_e[:, 2, None, None] * self.Txy
-                
-                # Stress stiffness penalization pG = 3.0 to prevent spurious void buckling
-                E_G = (xPhys ** 3.0) * self.E0
-                Ge_penalized = Ge * E_G[:, None, None]
+                blf, d_mu = self._compute_lba(
+                    U_e=U_e,
+                    xPhys=xPhys,
+                    Emin_abs=Emin_abs,
+                    iK=iK,
+                    jK=jK,
+                    free_dofs=free_dofs,
+                    K_free=K_free,
+                    solve_K=solve_K,
+                    nEig=nEig,
+                    ks_rho=ks_rho,
+                    compute_sens=True,
+                )
+                blf_history.append(blf)
 
-                G_full = sp.coo_matrix((Ge_penalized.flatten(), (iK, jK)), shape=(self.num_dofs, self.num_dofs)).tocsr()
-                G_free = G_full[free_dofs, :][:, free_dofs]
-
-                try:
-                    # Request nEig + 4 to ensure robustness for tight clusters
-                    k_request = min(nEig + 4, G_free.shape[0] - 2)
-                    evals, evecs = sla.eigsh(G_free, M=K_free, k=k_request, which='SA', tol=1e-3)
-                    # We want the lowest buckling eigenvalues, which correspond to the HIGHEST negative evals
-                    # eigs with 'SA' returns smallest algebraic, so most negative.
-                    # evals are sorted algebraically. We want the nEig most negative ones.
-                    # mu = -evals. We sort mu descending to pick the largest mu (lowest BLF).
-                    mu_all = -evals
-                    idx_sort = np.argsort(mu_all)[::-1]
-                    mu_all = mu_all[idx_sort]
-                    evecs = evecs[:, idx_sort]
-                    
-                    mu_active = mu_all[:nEig]
-                    evecs_active = evecs[:, :nEig]
-                    
-                    for i in range(nEig):
-                        norm_phi = np.sqrt(np.maximum(1e-16, evecs_active[:, i] @ (K_free @ evecs_active[:, i])))
-                        evecs_active[:, i] /= norm_phi
-                except Exception:
-                    mu_active = np.array([1e-6] * nEig)
-                    evecs_active = np.ones((len(free_dofs), nEig)) / np.sqrt(len(free_dofs))
-
-                mu_max = np.max(mu_active)
-                if nEig == 1:
-                    mu_ks = mu_max
-                    weights_ks = np.array([1.0])
-                else:
-                    sum_exp = np.sum(np.exp(ks_rho * (mu_active - mu_max)))
-                    mu_ks = mu_max + (1.0 / ks_rho) * np.log(sum_exp)
-                    weights_ks = np.exp(ks_rho * (mu_active - mu_max)) / sum_exp
-
-                blf = 1.0 / mu_ks if mu_ks > 1e-12 else 1e12
-                blf_history.append(float(blf))
-
-                d_mu_ks = np.zeros(self.num_elements, dtype=np.float64)
-
-                for idx_m in range(nEig):
-                    phi = np.zeros(self.num_dofs, dtype=np.float64)
-                    phi[free_dofs] = evecs_active[:, idx_m]
-                    phi_e = phi[self.edofMat]
-                    mu_m = mu_active[idx_m]
-
-                    phi_Ge_phi = np.einsum('ni,nij,nj->n', phi_e, Ge, phi_e)
-                    term1 = phi_Ge_phi * 3.0 * self.E0 * (xPhys ** 2.0)
-
-                    phi_Ke_phi = np.einsum('ni,ij,nj->n', phi_e, self.k0, phi_e)
-                    term2 = mu_m * phi_Ke_phi * self.penal * (self.E0 - self.Emin) * (xPhys ** (self.penal - 1.0))
-
-                    P = np.column_stack([
-                        np.einsum('ni,ij,nj->n', phi_e, self.Tx, phi_e),
-                        np.einsum('ni,ij,nj->n', phi_e, self.Ty, phi_e),
-                        np.einsum('ni,ij,nj->n', phi_e, self.Txy, phi_e)
-                    ])
-                    adj_L_e = (P @ (self.Cmat0 @ self.B0)) * E_G[:, None]
-                    adj_L = np.zeros(self.num_dofs, dtype=np.float64)
-                    np.add.at(adj_L, self.edofMat, adj_L_e)
-
-                    w_free = solve_K(adj_L[free_dofs])
-                    w = np.zeros(self.num_dofs, dtype=np.float64)
-                    w[free_dofs] = w_free
-                    w_e = w[self.edofMat]
-
-                    term3 = np.sum((w_e @ self.k0) * U_e, axis=1) * self.penal * (self.E0 - self.Emin) * (xPhys ** (self.penal - 1.0))
-
-                    d_mu_m = -(term1 + term2 - term3)
-                    d_mu_ks += weights_ks[idx_m] * d_mu_m
-
-                d_mu = d_mu_ks
-
-                # Normalize scales
-                scale_comp = float(np.mean(np.abs(dc_comp)))
                 scale_mu = float(np.mean(np.abs(d_mu)))
-                if scale_comp < 1e-12: scale_comp = 1.0
-                if scale_mu < 1e-12: scale_mu = 1.0
-
-                sens_comp = dc_comp / scale_comp
+                if scale_mu < 1e-30:
+                    scale_mu = 1.0
                 sens_mu = d_mu / scale_mu
 
-                alpha = float(np.clip(alpha_buckling, 0.0, 0.95))
                 sens_total = (1.0 - alpha) * sens_comp + alpha * sens_mu
 
             # 3. Spatial Filtering Chain Rule (Density Filter + Heaviside)
@@ -522,11 +585,20 @@ class SIMPOptimizer2D:
             # 4. Volume derivatives via Chain Rule
             dv_filtered = np.array(self.H @ (dxPhys_dxtilde / self.Hs)).flatten()
 
-            # 4. Deterministic Optimality Criteria (OC) Density Update with Bisection
-            l1, l2, move = 1e-9, 1e9, 0.2
+            # 5. Deterministic Optimality Criteria (OC) Density Update with Bisection
+            l1, l2 = 1e-9, 1e9
+            if legacy_schedule:
+                move = 0.2
+                oc_damping = 0.5
+            else:
+                # Damped OC exponent and reduced move limit at higher beta prevent 0.2 flip-flopping
+                oc_damping = 0.5 if beta < 2.0 else 0.3
+                move = 0.2 if beta < 4.0 else 0.1
+
             while (l2 - l1) / (l1 + l2) > 1e-4:
                 lmid = 0.5 * (l2 + l1)
-                Be = np.sqrt(np.maximum(0.0, -dc_filtered / (lmid * np.maximum(1e-12, dv_filtered))))
+                ratio = np.maximum(0.0, -dc_filtered / (lmid * np.maximum(1e-12, dv_filtered)))
+                Be = ratio ** oc_damping
                 xnew = np.maximum(0.001, np.maximum(x - move, np.minimum(1.0, np.minimum(x + move, x * Be))))
                 x_tilde_new = np.array(self.H @ xnew).flatten() / self.Hs
                 xPhys_new = (np.tanh(beta * eta) + np.tanh(beta * (x_tilde_new - eta))) / denom
@@ -542,7 +614,25 @@ class SIMPOptimizer2D:
             xPhys = xPhys_new.copy()
 
             if change < tol:
+                converged = True
                 break
+
+        # If mode == "buckling_max" and alpha == 0.0, evaluate BLF once at the end so metrics are populated
+        if mode == "buckling_max" and len(blf_history) == 0 and last_U_e is not None:
+            final_blf, _ = self._compute_lba(
+                U_e=last_U_e,
+                xPhys=xPhys,
+                Emin_abs=Emin_abs,
+                iK=iK,
+                jK=jK,
+                free_dofs=free_dofs,
+                K_free=last_K_free,
+                solve_K=last_solve_K,
+                nEig=nEig,
+                ks_rho=ks_rho,
+                compute_sens=False,
+            )
+            blf_history.append(final_blf)
 
         density_matrix = np.zeros((self.nely, self.nelx), dtype=np.float64)
         for elx in range(self.nelx):
@@ -550,9 +640,18 @@ class SIMPOptimizer2D:
                 density_matrix[ely, elx] = xPhys[elx * self.nely + ely]
 
         exec_time = time.time() - start_time
+        last_change = ch_history[-1] if ch_history else 0.0
+        if converged:
+            status_msg = f"SIMP optimization converged after {iterations} iterations ({exec_time:.2f}s)."
+        else:
+            status_msg = (
+                f"SIMP optimization stopped at max_iter={iterations} "
+                f"(change={last_change:.4f} >= tol={tol}, {exec_time:.2f}s)."
+            )
+
         return SIMPResult(
             success=True,
-            status_message=f"SIMP optimization converged in {iterations} iterations ({exec_time:.2f}s).",
+            status_message=status_msg,
             density_matrix=density_matrix,
             compliance=compliance,
             volume_fraction=float(np.mean(xPhys)),
@@ -734,7 +833,8 @@ class SIMPOptimizer2D:
             free_mask[fdof] = False
         free_dofs = all_dofs[free_mask]
 
-        E_elements = self.Emin + (res.density_matrix.T.flatten() ** self.penal) * (self.E0 - self.Emin)
+        Emin_abs = self.Emin_ratio * self.E0
+        E_elements = Emin_abs + (res.density_matrix.T.flatten() ** self.penal) * (self.E0 - Emin_abs)
         sK = (self.k0.flatten()[np.newaxis, :] * E_elements[:, np.newaxis]).flatten()
         iK = np.kron(self.edofMat, np.ones((8, 1), dtype=np.int32)).flatten()
         jK = np.kron(self.edofMat, np.ones((1, 8), dtype=np.int32)).flatten()
@@ -748,7 +848,7 @@ class SIMPOptimizer2D:
         U[free_dofs] = U_free
         U_e = U[self.edofMat]
 
-        sigma_e = (self.Cmat0 @ self.B0 @ U_e.T).T
+        sigma_e = self.E0 * (self.Cmat0 @ self.B0 @ U_e.T).T
         sx = sigma_e[:, 0]
         sy = sigma_e[:, 1]
         sxy = sigma_e[:, 2]

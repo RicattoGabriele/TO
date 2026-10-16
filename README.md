@@ -46,6 +46,19 @@ This repository was developed with a strict human-in-the-loop approach: mathemat
         +---> Physical or mathematical issue ---> back to [1. Theoretical formulation (human)]
 ```
 
+## Validation & changelog
+
+Cross-checking the solver against external references (Altair Inspire on an Aluminum 6061-T6 $400 \times 200 \times 5\,\text{mm}$ cantilever and closed-form Timoshenko beam theory) identified two hardcoded UI parameters, a latent $E_0^2$ scaling bug, and an unconverged continuation step:
+
+- **Fixed double-$E_0$ scaling bug (`physics_engine/simp_engine_2d.py`)**: `_build_element_stiffness()` (`k0`) and `_init_buckling_matrices()` (`Cmat0`) previously multiplied by `self.E0` at initialization while `solve()` multiplied again by `E_elements ~ E0` and `E_G ~ E0`, causing elastic stiffness $K$ to scale as $E_0^2$ whenever $E_0 \neq 1$. Both base matrices are now assembled at unit modulus ($E = 1.0$) with dimensionless void ratio $E_{\min}/E_0 = 10^{-9}$, restoring exact invariance of $C \cdot E_0 \cdot t$ and $\text{BLF} / (E_0 \cdot t)$.
+- **Exposed physical parameters in UI (`app.py`)**: Replaced hardcoded `E0 = 1.0 MPa`, `thickness = 10.0 mm`, `nu = 0.30`, and `max_iter = 45` with explicit inputs defaulting to Aluminum 6061-T6 (`E0 = 68900 MPa`, `nu = 0.33`, `thickness = 5.0 mm`, `max_iter = 100`).
+- **$\beta$-continuation, OC damping, and honest convergence reporting**: Prevented the Heaviside sharpness parameter $\beta$ from jumping on the final iteration without equilibration, added OC damping (`oc_damping = 0.3`, `move = 0.1` for $\beta \ge 2$) to eliminate $\pm 0.2$ boundary flip-flopping, skipped redundant `eigsh` solves when $\alpha = 0$, and restricted `"converged after N iterations"` in `status_message` to runs where `change < tol` genuinely triggers.
+- **Filter radius length-scale note**: Added UI and documentation notes clarifying that $r_{\min}$ is specified in $\text{mm}$; setting $r_{\min} = 2.5\,\text{mm}$ on a $dx = 2.0\,\text{mm}$ mesh ($r_{\min}/dx = 1.25$ elements) provides minimal filtering and permits mesh-scale fragments, whereas mesh independence requires $r_{\min} \approx 2.5\text{--}3$ element lengths ($5\text{--}6\,\text{mm}$).
+- **Automated `pytest` verification suite (`tests/test_simp_engine.py`)**:
+  1. *Frozen-settings regression*: $200 \times 100$ cantilever ($E_0 = 68900\,\text{MPa}, t = 5\,\text{mm}, 45$ iterations, legacy $\beta$) reproduces $C = 392.0\,\text{N}\cdot\text{mm}$ ($30\,\text{mm}$ strip load, $\nu = 0.33$) and $C = 418.01\,\text{N}\cdot\text{mm}$ (point load, $\nu = 0.30$).
+  2. *Scale invariance*: $(E_0 = 1, t = 10)$ vs $(E_0 = 68900, t = 5)$ yields identical $C \cdot E_0 \cdot t$, identical $\text{BLF} / (E_0 \cdot t)$, and identical topology `density_matrix`.
+  3. *Full solid vs Timoshenko beam*: Full-solid Q4 FEM cantilever matches analytical Timoshenko compliance ($C_{\text{Timoshenko}} = \frac{F^2 L^3}{3 E_0 I} + \frac{6 F^2 L}{5 G A} = 111.42\,\text{N}\cdot\text{mm}$) within $0.6\%$.
+
 ## Repository structure
 
 ```text
@@ -59,7 +72,7 @@ This repository was developed with a strict human-in-the-loop approach: mathemat
 │   ├── ground_structure.py         # Discrete truss ground structure solver
 │   └── __init__.py
 └── tests/
-    ├── test_simp_engine.py         # Unit tests for stiffness, OC convergence, and volume constraint
+    ├── test_simp_engine.py         # Unit, regression, scale-invariance, and Timoshenko tests
     └── test_case_study_ground_structure.py
 ```
 

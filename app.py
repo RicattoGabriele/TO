@@ -74,11 +74,14 @@ st.markdown('<div class="sub-header">SIMP Continuous Domain Optimization with Li
 col_s1, col_s2, col_s3 = st.columns(3)
 
 with col_s1:
-    st.markdown("**1. Domain Discretization**")
+    st.markdown("**1. Domain & Material Properties**")
     nelx_in = st.number_input("Elements X (nelx)", min_value=10, max_value=240, value=55, step=2)
     nely_in = st.number_input("Elements Y (nely)", min_value=6, max_value=120, value=25, step=2)
     dx_in = st.number_input("Element Size dx (mm)", min_value=0.2, max_value=20.0, value=2.0, step=0.5)
     dy_in = st.number_input("Element Size dy (mm)", min_value=0.2, max_value=20.0, value=2.0, step=0.5)
+    thickness_in = st.number_input("Thickness t (mm)", min_value=0.1, max_value=100.0, value=5.0, step=0.5)
+    E0_in = st.number_input("Young's Modulus E0 (MPa)", min_value=1.0, max_value=500000.0, value=68900.0, step=1000.0)
+    nu_in = st.number_input("Poisson's Ratio (ν)", min_value=0.0, max_value=0.49, value=0.33, step=0.01)
 
 with col_s2:
     st.markdown("**2. Optimization Parameters**")
@@ -87,8 +90,14 @@ with col_s2:
     st.markdown("**(CRITICAL) Pareto Trade-off Weight**")
     alpha_in = st.slider("Buckling Reinforcement Factor (α)", min_value=0.00, max_value=0.90, value=0.40, step=0.05)
     
-    rmin_in = st.slider("Filter Radius r_min (mm)", min_value=1.5, max_value=10.0, value=2.5, step=0.5)
+    rmin_in = st.slider("Filter Radius r_min (mm)", min_value=1.5, max_value=15.0, value=5.0, step=0.5)
+    rmin_elems = rmin_in / max(dx_in, dy_in)
+    if rmin_elems < 2.0:
+        st.caption(f"⚠️ r_min = {rmin_elems:.2f} elements: minimal filtering (mesh-scale features possible; use ≈ 2.5–3 elements for mesh independence).")
+    else:
+        st.caption(f"Filter span: {rmin_elems:.2f} elements")
     penal_in = st.number_input("SIMP Penalization (p)", min_value=1.0, max_value=4.0, value=3.0, step=0.5)
+    max_iter_in = st.number_input("Max Iterations", min_value=10, max_value=300, value=100, step=5)
     
     st.markdown("**Buckling Aggregation Method**")
     agg_method = st.radio(
@@ -150,6 +159,7 @@ if num_elements > 20000:
 # Cache key
 simp_key = (
     int(nelx_in), int(nely_in), float(dx_in), float(dy_in),
+    float(thickness_in), float(E0_in), float(nu_in), int(max_iter_in),
     float(volfrac_in), float(rmin_in), float(penal_in),
     "buckling_max", float(alpha_in), int(nEig_in),
     bc_type, custom_sup_str, tuple(loads_simp)
@@ -169,7 +179,8 @@ if st.button("Run Topology Optimization", type="primary"):
                 progress_text.info(f"🚀 Executing SIMP Optimization... Iteration {it}/{max_it} - {pct}% complete...")
             optimizer = SIMPOptimizer2D(
                 nelx=int(nelx_in), nely=int(nely_in), dx=float(dx_in), dy=float(dy_in),
-                thickness=10.0, penal=float(penal_in), rmin=float(rmin_in), volfrac=float(volfrac_in)
+                thickness=float(thickness_in), E0=float(E0_in), nu=float(nu_in),
+                penal=float(penal_in), rmin=float(rmin_in), volfrac=float(volfrac_in)
             )
 
             # Apply boundary conditions
@@ -189,7 +200,7 @@ if st.button("Run Topology Optimization", type="primary"):
             for lx, ly, fx, fy in loads_simp:
                 optimizer.add_load(lx, ly, fx=fx, fy=fy)
 
-            simp_res = optimizer.solve(max_iter=45, tol=0.01, mode="buckling_max", alpha_buckling=float(alpha_in), nEig=int(nEig_in), progress_callback=update_progress)
+            simp_res = optimizer.solve(max_iter=int(max_iter_in), tol=0.01, mode="buckling_max", alpha_buckling=float(alpha_in), nEig=int(nEig_in), progress_callback=update_progress)
             progress_text.empty()
             progress_bar.empty()
 
@@ -206,6 +217,7 @@ optimizer = st.session_state.get("simp_optimizer", None)
 
 def render_main_visualization(optimizer, simp_res):
     st.markdown("#### Topology Metrics")
+    st.caption(simp_res.status_message)
     sm1, sm2, sm3, sm4, sm5 = st.columns(5)
     sm1.metric("Compliance (C)", f"{simp_res.compliance:.2f} N·mm")
     if simp_res.blf_history:
@@ -213,7 +225,7 @@ def render_main_visualization(optimizer, simp_res):
     else:
         sm2.metric("Buckling (BLF)", "N/A")
     sm3.metric("Volume Frac", f"{simp_res.volume_fraction*100:.1f}%")
-    sm4.metric("Iterations", f"{simp_res.iterations_run} / 45")
+    sm4.metric("Iterations", f"{simp_res.iterations_run} / {int(max_iter_in)}")
     sm5.metric("Time", f"{simp_res.execution_time_sec:.1f} s")
 
     col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 1])
@@ -277,7 +289,8 @@ if simp_res is not None and simp_res.success and optimizer is not None:
                 # Create a clone of the optimizer for the run
                 opt_clone = SIMPOptimizer2D(
                     nelx=int(nelx_in), nely=int(nely_in), dx=float(dx_in), dy=float(dy_in),
-                    thickness=10.0, penal=float(penal_in), rmin=float(rmin_in), volfrac=float(volfrac_in)
+                    thickness=float(thickness_in), E0=float(E0_in), nu=float(nu_in),
+                    penal=float(penal_in), rmin=float(rmin_in), volfrac=float(volfrac_in)
                 )
                 # Re-apply BCs
                 if bc_type == "Full Left Wall Fixation (x = 0)":
@@ -296,7 +309,7 @@ if simp_res is not None and simp_res.success and optimizer is not None:
                 for lx, ly, fx, fy in loads_simp:
                     opt_clone.add_load(lx, ly, fx=fx, fy=fy)
 
-                res_alpha = opt_clone.solve(max_iter=45, tol=0.01, mode="buckling_max", alpha_buckling=a, nEig=int(nEig_in))
+                res_alpha = opt_clone.solve(max_iter=int(max_iter_in), tol=0.01, mode="buckling_max", alpha_buckling=a, nEig=int(nEig_in))
                 
                 if res_alpha.success:
                     with placeholders[i].container():
