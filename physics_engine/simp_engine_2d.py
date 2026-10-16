@@ -86,6 +86,8 @@ class SIMPResult:
     dx: float
     dy: float
     blf_history: Optional[List[float]] = None
+    converged: bool = False
+    objective_stable_20: bool = False
 
 
 class SIMPOptimizer2D:
@@ -464,6 +466,7 @@ class SIMPOptimizer2D:
         ks_rho: float = 40.0,
         progress_callback = None,
         legacy_schedule: bool = False,
+        tol_c: float = 0.001,
     ) -> SIMPResult:
         """
         Runs topology optimization.
@@ -476,6 +479,7 @@ class SIMPOptimizer2D:
             alpha_buckling: Weight factor for buckling sensitivity in [0.0, 1.0] when mode='buckling_max' (default: 0.40).
             legacy_schedule: If True, uses the legacy frozen 45-iter schedule (beta = min(16, 2**(it//15)), undamped OC)
                              for exact backward regression testing.
+            tol_c: Relative compliance convergence tolerance over 10 iterations evaluated at maximum beta (default: 0.001, i.e. 0.1%).
         """
         start_time = time.time()
         if len(self.fixed_dofs) < 3:
@@ -499,6 +503,9 @@ class SIMPOptimizer2D:
         c_history, ch_history, blf_history = [], [], []
         compliance, iterations = 0.0, 0
         converged = False
+        convergence_reason = ""
+        beta_max = 16.0 if legacy_schedule else 8.0
+        beta_max_count = 0
         alpha = float(np.clip(alpha_buckling, 0.0, 0.95)) if mode == "buckling_max" else 0.0
 
         # Track last FEA state so we can evaluate final BLF if alpha == 0 in buckling_max mode
@@ -520,6 +527,9 @@ class SIMPOptimizer2D:
                 freeze_it = max(1, max_iter - 15)
                 eff_it = min(it, freeze_it)
                 beta = min(8.0, 1.0 * (2.0 ** ((eff_it - 1) // 20)))
+
+            if beta >= beta_max:
+                beta_max_count += 1
             
             x_tilde = np.array(self.H @ x).flatten() / self.Hs
             denom = np.tanh(beta * eta) + np.tanh(beta * (1.0 - eta))
@@ -613,8 +623,18 @@ class SIMPOptimizer2D:
             x = xnew.copy()
             xPhys = xPhys_new.copy()
 
+            # Stopping criterion: relative compliance change over last 10 iterations evaluated only at maximum beta
+            if tol_c is not None and tol_c > 0 and beta >= beta_max and beta_max_count >= 11 and len(c_history) >= 11:
+                rel_dC = abs(c_history[-1] - c_history[-11]) / max(abs(c_history[-1]), 1e-12)
+                if rel_dC < tol_c:
+                    converged = True
+                    tol_str = "0.1%" if abs(tol_c - 0.001) < 1e-6 else f"{tol_c:.2%}"
+                    convergence_reason = f"objective stable: ΔC_10={rel_dC:.4%} < {tol_str}"
+                    break
+
             if change < tol:
                 converged = True
+                convergence_reason = f"change={change:.4f} < tol={tol}"
                 break
 
         # If mode == "buckling_max" and alpha == 0.0, evaluate BLF once at the end so metrics are populated
@@ -641,13 +661,29 @@ class SIMPOptimizer2D:
 
         exec_time = time.time() - start_time
         last_change = ch_history[-1] if ch_history else 0.0
+
+        # Evaluate objective stability over the last 20 iterations
+        objective_stable_20 = False
+        if len(c_history) >= 20:
+            var_20 = (float(np.max(c_history[-20:])) - float(np.min(c_history[-20:]))) / max(abs(c_history[-1]), 1e-12)
+            if var_20 < 0.001:
+                objective_stable_20 = True
+
         if converged:
-            status_msg = f"SIMP optimization converged after {iterations} iterations ({exec_time:.2f}s)."
+            if convergence_reason.startswith("objective stable"):
+                status_msg = (
+                    f"SIMP optimization converged after {iterations} iterations "
+                    f"({convergence_reason}, {exec_time:.2f}s)."
+                )
+            else:
+                status_msg = f"SIMP optimization converged after {iterations} iterations ({exec_time:.2f}s)."
         else:
             status_msg = (
-                f"SIMP optimization stopped at max_iter={iterations} "
-                f"(change={last_change:.4f} >= tol={tol}, {exec_time:.2f}s)."
+                f"SIMP optimization stopped after {iterations} iterations "
+                f"(max_iter={max_iter}, change={last_change:.4f}, {exec_time:.2f}s)."
             )
+            if objective_stable_20:
+                status_msg += " objective stable (ΔC < 0.1% over the last 20 iterations)"
 
         return SIMPResult(
             success=True,
@@ -663,7 +699,9 @@ class SIMPOptimizer2D:
             nely=self.nely,
             dx=self.dx,
             dy=self.dy,
-            blf_history=blf_history if mode == "buckling_max" else None
+            blf_history=blf_history if mode == "buckling_max" else None,
+            converged=converged,
+            objective_stable_20=objective_stable_20,
         )
 
     def to_plotly_heatmap(

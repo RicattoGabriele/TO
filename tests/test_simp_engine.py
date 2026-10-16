@@ -243,13 +243,80 @@ class TestSIMPEngine2D(unittest.TestCase):
 
         # 1. Force early stop before convergence
         res_unconverged = opt.solve(max_iter=5, tol=1e-6, mode="compliance")
-        self.assertIn("stopped at max_iter=5", res_unconverged.status_message)
-        self.assertNotIn("converged after", res_unconverged.status_message)
+        self.assertIn("stopped after 5 iterations", res_unconverged.status_message)
+        self.assertIn("max_iter=5", res_unconverged.status_message)
+        self.assertNotIn("converged", res_unconverged.status_message)
+        self.assertFalse(res_unconverged.converged)
+        self.assertFalse(res_unconverged.objective_stable_20)
 
         # 2. Allow convergence with damped schedule and looser tolerance
         res_converged = opt.solve(max_iter=100, tol=0.02, mode="compliance")
         self.assertLess(res_converged.change_history[-1], 0.02)
         self.assertIn(f"converged after {res_converged.iterations_run} iterations", res_converged.status_message)
+        self.assertTrue(res_converged.converged)
+
+    def test_8_compliance_stopping_criterion_at_max_beta(self):
+        """
+        Verify the new stopping criterion: relative compliance change over 10 iterations
+        evaluated only at maximum beta (beta >= beta_max).
+        Also verify objective stability reporting over the last 20 iterations.
+        """
+        # Benchmark 55x25 cantilever where border elements oscillate preventing change < 0.01,
+        # but objective stabilizes (< 0.1% change over 10 iterations at beta=8.0).
+        opt = SIMPOptimizer2D(nelx=55, nely=25, dx=1.0, dy=1.0, volfrac=0.4)
+        opt.fix_wall("left")
+        opt.add_load(55, 0, fx=0.0, fy=-100.0)
+
+        res = opt.solve(max_iter=100, tol=0.01, tol_c=0.001)
+
+        # Must converge early before max_iter=100 because of stable compliance at max beta
+        self.assertTrue(res.converged)
+        self.assertLess(res.iterations_run, 100)
+        self.assertGreaterEqual(res.iterations_run, 61)  # beta reaches 8.0 at it=61
+        self.assertIn(f"converged after {res.iterations_run} iterations", res.status_message)
+        self.assertIn("objective stable: ΔC_10=", res.status_message)
+        self.assertIn("< 0.1%", res.status_message)
+
+        # Verify relative delta C over 10 iterations is indeed < 0.1%
+        rel_dC_10 = abs(res.compliance_history[-1] - res.compliance_history[-11]) / res.compliance_history[-1]
+        self.assertLess(rel_dC_10, 0.001)
+
+        # Verify exhausting max_iter without triggering convergence:
+        # Run with very tight tolerances so neither change nor tol_c triggers
+        res_stopped = opt.solve(max_iter=100, tol=1e-8, tol_c=1e-8)
+        self.assertFalse(res_stopped.converged)
+        self.assertEqual(res_stopped.iterations_run, 100)
+        self.assertIn("stopped after 100 iterations", res_stopped.status_message)
+        self.assertIn("max_iter=100", res_stopped.status_message)
+        self.assertNotIn("converged", res_stopped.status_message)
+
+        # Over the last 20 iterations (it=81..100), compliance variation is 0.047% < 1‰
+        self.assertTrue(res_stopped.objective_stable_20)
+        self.assertIn("objective stable (ΔC < 0.1% over the last 20 iterations)", res_stopped.status_message)
+
+    def test_9_stopping_criterion_edge_cases(self):
+        """
+        Verify edge cases:
+        1. tol_c=None runs cleanly without raising TypeError.
+        2. Short run max_iter=10 cleanly reports 'stopped after 10 iterations' with objective_stable_20=False.
+        """
+        opt = SIMPOptimizer2D(nelx=20, nely=10, dx=1.0, dy=1.0, volfrac=0.4)
+        opt.fix_wall("left")
+        opt.add_load(20, 5, fx=0.0, fy=-50.0)
+
+        # 1. tol_c=None
+        res_none = opt.solve(max_iter=5, tol=1e-8, tol_c=None)
+        self.assertFalse(res_none.converged)
+        self.assertIn("stopped after 5 iterations", res_none.status_message)
+
+        # 2. Short run max_iter=10
+        res_10 = opt.solve(max_iter=10, tol=1e-8, tol_c=0.001)
+        self.assertFalse(res_10.converged)
+        self.assertFalse(res_10.objective_stable_20)
+        self.assertEqual(res_10.iterations_run, 10)
+        self.assertIn("stopped after 10 iterations", res_10.status_message)
+        self.assertNotIn("converged", res_10.status_message)
+        self.assertNotIn("objective stable", res_10.status_message)
 
 
 if __name__ == "__main__":
