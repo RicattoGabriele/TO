@@ -1,10 +1,10 @@
-# 2D topology optimization with linearized buckling analysis
+# implementation of a 2D topology optimization framework for compliance and linearized buckling via weighted sum method
 
-2D continuum topology optimization solver based on the three-field SIMP method (design variables -> spatial filter -> Heaviside projection), coupled with linearized buckling analysis (LBA), Kreisselmeier-Steinhauser (KS) multi-modal aggregation, and Pareto multi-objective scalarization. Includes an interactive Streamlit dashboard and a discrete ground structure truss solver.
+2D continuum topology optimization solver based on the three-field SIMP method (design variables -> spatial filter -> Heaviside projection), coupled with linearized buckling analysis (LBA), Kreisselmeier-Steinhauser (KS) multi-modal aggregation, and Pareto multi-objective scalarization. Includes an interactive Streamlit dashboard.
 
 ## Implemented features
 
-- Vectorized Q4 plane stress FEM (`physics_engine/simp_engine_2d.py`):
+- Q4 plane stress FEM (`physics_engine/simp_engine_2d.py`):
   - 4-node bilinear quadrilateral elements with pre-computed 2x2 Gauss stiffness matrix ($k_0$).
   - Sparse CSC assembly (`scipy.sparse.csc_matrix`) and reusable sparse LU factorization (`scipy.sparse.linalg.factorized`), computed once per iteration and shared across static equilibrium, shift-invert Arnoldi iterations, and adjoint solves.
 - Three-field SIMP and exact chain rule:
@@ -13,42 +13,40 @@
   - Optimality criteria (OC) bisection loop evaluating the true projected physical volume at every sub-iteration, with support for passive solid and void regions.
 - Linearized buckling analysis (LBA) and KS aggregation:
   - Geometric stiffness matrix $K_G(x_{\text{Phys}}, u)$ assembled from the non-linear Green-Lagrange strain tensor ($u_{,x}^2 + v_{,x}^2$) using pre-computed centroidal matrices ($T_x, T_y, T_{xy}$).
-  - Differential penalization ($p_G = 6 > p_K = 3$ and zero geometric stiffness in void regions) to suppress spurious buckling modes in low-density elements.
+  - Differential penalization ($p_G = 6 > p_K = 3$ and zero stiffness in void regions) to suppress spurious buckling modes in low-density elements.
   - Option to optimize either the fundamental mode ($n_{\text{eig}} = 1$) or the Kreisselmeier-Steinhauser (KS) multi-modal aggregate ($n_{\text{eig}} > 1$) to avoid mode switching when eigenvalues coalesce.
 - Pareto trade-off and post-processing (`app.py`):
   - Continuous weighting $\alpha$ between compliance ($C$) and critical buckling load factor ($\text{BLF} = \lambda_1$) using dynamic $L_1$ gradient normalization.
   - Automated Pareto frontier sweep across $\alpha \in [0, 1]$.
-  - Dual-view visualization: black-and-white structural layout alongside a void-masked minimum principal stress ($\sigma_{II}$) map (`Jet_r` colormap: red for compression, blue for tension).
+  - Double visualization: black and white layout plus a void-masked minimum principal stress ($\sigma_{II}$) map (`Jet_r` colormap: red for compression, blue for tension).
 
 ## Man-in-the-loop development workflow
 
-This repository was developed with a strict human-in-the-loop approach: mathematical formulation, literature selection, and physical validation are handled by the engineer, while the AI agent is used strictly for code translation, vectorization, and UI wiring.
+This repo was developed with a human-in-the-loop approach: math, physics and literature selection are handled by the owner, while the agents are used for coding.
 
 ```text
-[1. Theoretical formulation (human)]
-   Literature review (Sigmund, Ferrari, Wang, Marler & Arora)
-   Analytical derivation of FEM, LBA, adjoint sensitivities, and Heaviside chain rule
+[1. Theory ]
+   Literature review
         |
         v
-[2. Engineering specification (human)]
-   Definition of matrix equations, boundary conditions, and algorithmic structure (OC / KS / Pareto)
+[2. Physics]
+   Definition of matrix equations, boundary conditions, and algorithmic structure.
         |
         v
-[3. Code implementation & vectorization (AI)]
-   Translation into vectorized NumPy/SciPy routines, sparse LU caching, and Streamlit UI
+[3. Code implementation & vectorization ]
+   Code writing for both the solver and the UI
         |
         v
-[4. Physical validation & code review (human)]
-   Verification against closed-form benchmarks, Green-Lagrange tensor check,
-   chain-rule consistency check, and exact physical volume conservation in OC
+[4. Validation & code review ]
+   Verification against literature and commercial solvers
         |
-        +---> Numerical or syntax bug ----------> back to [3. Code implementation (AI)]
-        +---> Physical or mathematical issue ---> back to [1. Theoretical formulation (human)]
+        +---> Numerical or syntax bug ----------> back to [3]
+        +---> Physical or mathematical issue ---> back to [1]
 ```
 
 ## Validation & changelog
 
-Cross-checking the solver against external references (Altair Inspire on an Aluminum 6061-T6 $400 \times 200 \times 5\,\text{mm}$ cantilever and closed-form Timoshenko beam theory) identified two hardcoded UI parameters, a latent $E_0^2$ scaling bug, and an unconverged continuation step:
+Cross-checking the solver against external references (Altair Inspire) identified two hardcoded UI parameters, a latent $E_0^2$ scaling bug, and an unconverged continuation step:
 
 - **Fixed double-$E_0$ scaling bug (`physics_engine/simp_engine_2d.py`)**: `_build_element_stiffness()` (`k0`) and `_init_buckling_matrices()` (`Cmat0`) previously multiplied by `self.E0` at initialization while `solve()` multiplied again by `E_elements ~ E0` and `E_G ~ E0`, causing elastic stiffness $K$ to scale as $E_0^2$ whenever $E_0 \neq 1$. Both base matrices are now assembled at unit modulus ($E = 1.0$) with dimensionless void ratio $E_{\min}/E_0 = 10^{-9}$, restoring exact invariance of $C \cdot E_0 \cdot t$ and $\text{BLF} / (E_0 \cdot t)$.
 - **Exposed physical parameters in UI (`app.py`)**: Replaced hardcoded `E0 = 1.0 MPa`, `thickness = 10.0 mm`, `nu = 0.30`, and `max_iter = 45` with explicit inputs defaulting to Aluminum 6061-T6 (`E0 = 68900 MPa`, `nu = 0.33`, `thickness = 5.0 mm`, `max_iter = 100`).
