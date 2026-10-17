@@ -360,6 +360,7 @@ class SIMPOptimizer2D:
         nEig: int,
         ks_rho: float,
         compute_sens: bool = True,
+        legacy_schedule: bool = False,
     ) -> Tuple[float, np.ndarray]:
         """Computes Linearized Buckling Analysis (BLF) and optionally KS-aggregated sensitivity."""
         sigma_e = (self.Cmat0 @ self.B0 @ U_e.T).T
@@ -369,8 +370,17 @@ class SIMPOptimizer2D:
             + sigma_e[:, 2, None, None] * self.Txy
         )
 
-        # Stress stiffness penalization pG = 3.0 to prevent spurious void buckling
-        E_G = (xPhys ** 3.0) * self.E0
+        # Differential void suppression to prevent spurious buckling modes in low-density elements
+        if legacy_schedule:
+            E_G = (xPhys ** 3.0) * self.E0
+            dE_G = 3.0 * self.E0 * (xPhys ** 2.0)
+        else:
+            x0_3 = 0.10 ** 3.0
+            x3 = xPhys ** 3.0
+            psi = x3 / (x3 + x0_3)
+            E_G = x3 * psi * self.E0
+            dE_G = 3.0 * self.E0 * (xPhys ** 2.0) * psi * (2.0 - psi)
+
         Ge_penalized = Ge * E_G[:, None, None]
 
         G_full = sp.coo_matrix((Ge_penalized.flatten(), (iK, jK)), shape=(self.num_dofs, self.num_dofs)).tocsr()
@@ -383,8 +393,13 @@ class SIMPOptimizer2D:
         try:
             k_request = min(nEig + 4, G_free.shape[0] - 2)
             v0_det = np.ones(G_free.shape[0], dtype=np.float64)
+            Minv_op = sla.LinearOperator(
+                K_free.shape,
+                matvec=lambda v: solve_K(v) * scale_Kt,
+                dtype=np.float64,
+            )
             evals_scaled, evecs = sla.eigsh(
-                G_free, M=K_free_scaled, k=k_request, which='SA', tol=1e-4, v0=v0_det
+                G_free, M=K_free_scaled, Minv=Minv_op, k=k_request, which='SA', tol=1e-4, v0=v0_det
             )
             evals = evals_scaled / scale_Kt
             mu_all = -evals
@@ -430,7 +445,7 @@ class SIMPOptimizer2D:
             mu_m = mu_active[idx_m]
 
             phi_Ge_phi = np.einsum('ni,nij,nj->n', phi_e, Ge, phi_e)
-            term1 = phi_Ge_phi * 3.0 * self.E0 * (xPhys ** 2.0)
+            term1 = phi_Ge_phi * dE_G
 
             phi_Ke_phi = np.einsum('ni,ij,nj->n', phi_e, self.k0, phi_e)
             term2 = mu_m * phi_Ke_phi * self.penal * (self.E0 - Emin_abs) * (xPhys ** (self.penal - 1.0))
@@ -506,10 +521,19 @@ class SIMPOptimizer2D:
         convergence_reason = ""
         beta_max = 16.0 if legacy_schedule else 8.0
         beta_max_count = 0
-        alpha = float(np.clip(alpha_buckling, 0.0, 0.95)) if mode == "buckling_max" else 0.0
+        if mode == "buckling_max":
+            alpha_target = (
+                float(np.clip(alpha_buckling, 0.0, 0.95))
+                if legacy_schedule
+                else 0.65 * float(np.clip(alpha_buckling, 0.0, 1.0))
+            )
+        else:
+            alpha_target = 0.0
 
-        # Track last FEA state so we can evaluate final BLF if alpha == 0 in buckling_max mode
-        last_U_e, last_K_free, last_solve_K = None, None, None
+        # Track last FEA state so final BLF and density_matrix match the last evaluated FEA state
+        last_xPhys, last_U_e, last_K_free, last_solve_K = xPhys.copy(), None, None, None
+        dc_old = None
+        prev_beta = 1.0
 
         for it in range(1, max_iter + 1):
             iterations = it
@@ -527,6 +551,10 @@ class SIMPOptimizer2D:
                 freeze_it = max(1, max_iter - 15)
                 eff_it = min(it, freeze_it)
                 beta = min(8.0, 1.0 * (2.0 ** ((eff_it - 1) // 20)))
+
+            if beta != prev_beta:
+                dc_old = None
+                prev_beta = beta
 
             if beta >= beta_max:
                 beta_max_count += 1
@@ -553,7 +581,7 @@ class SIMPOptimizer2D:
             compliance = float(np.sum(E_elements * ce))
             c_history.append(compliance)
 
-            last_U_e, last_K_free, last_solve_K = U_e, K_free, solve_K
+            last_xPhys, last_U_e, last_K_free, last_solve_K = xPhys.copy(), U_e, K_free, solve_K
 
             # Compliance sensitivity: dC/dx_e = - penal * (E0 - Emin) * x^(penal - 1) * ce
             dc_comp = -self.penal * (self.E0 - Emin_abs) * (xPhys ** (self.penal - 1.0)) * ce
@@ -562,10 +590,12 @@ class SIMPOptimizer2D:
                 scale_comp = 1.0
             sens_comp = dc_comp / scale_comp
 
-            if mode == "compliance" or alpha == 0.0:
+            if mode == "compliance" or alpha_target == 0.0:
                 # When alpha == 0.0, buckling sensitivity has zero weight; skip eigsh inside the loop
                 sens_total = sens_comp
             else:
+                nEig_eff = nEig if legacy_schedule else (max(nEig, 6) if nEig > 1 else 1)
+                ks_rho_eff = ks_rho if legacy_schedule else min(ks_rho, 20.0)
                 blf, d_mu = self._compute_lba(
                     U_e=U_e,
                     xPhys=xPhys,
@@ -575,18 +605,28 @@ class SIMPOptimizer2D:
                     free_dofs=free_dofs,
                     K_free=K_free,
                     solve_K=solve_K,
-                    nEig=nEig,
-                    ks_rho=ks_rho,
+                    nEig=nEig_eff,
+                    ks_rho=ks_rho_eff,
                     compute_sens=True,
+                    legacy_schedule=legacy_schedule,
                 )
                 blf_history.append(blf)
 
-                scale_mu = float(np.mean(np.abs(d_mu)))
-                if scale_mu < 1e-30:
-                    scale_mu = 1.0
-                sens_mu = d_mu / scale_mu
-
-                sens_total = (1.0 - alpha) * sens_comp + alpha * sens_mu
+                if legacy_schedule:
+                    scale_mu = float(np.mean(np.abs(d_mu)))
+                    if scale_mu < 1e-30:
+                        scale_mu = 1.0
+                    sens_mu = d_mu / scale_mu
+                    sens_total = (1.0 - alpha_target) * sens_comp + alpha_target * sens_mu
+                else:
+                    # Clamp positive buckling sensitivities so buckling never erodes tension members
+                    d_mu_neg = np.minimum(0.0, d_mu)
+                    scale_mu = float(np.mean(np.abs(d_mu_neg)))
+                    if scale_mu < 1e-30:
+                        scale_mu = 1.0
+                    sens_mu = d_mu_neg / scale_mu
+                    alpha_eff = alpha_target * min(1.0, (it - 1) / 15.0)
+                    sens_total = (1.0 - alpha_eff) * sens_comp + alpha_eff * sens_mu
 
             # 3. Spatial Filtering Chain Rule (Density Filter + Heaviside)
             dxPhys_dxtilde = beta * (1.0 - np.tanh(beta * (x_tilde - eta))**2) / denom
@@ -595,11 +635,20 @@ class SIMPOptimizer2D:
             # 4. Volume derivatives via Chain Rule
             dv_filtered = np.array(self.H @ (dxPhys_dxtilde / self.Hs)).flatten()
 
+            # Stabilize buckling sensitivities across consecutive iterations at constant beta
+            if mode == "buckling_max" and alpha_target > 0.0 and not legacy_schedule:
+                if dc_old is not None:
+                    dc_filtered = 0.30 * dc_filtered + 0.70 * dc_old
+                dc_old = dc_filtered.copy()
+
             # 5. Deterministic Optimality Criteria (OC) Density Update with Bisection
             l1, l2 = 1e-9, 1e9
             if legacy_schedule:
                 move = 0.2
                 oc_damping = 0.5
+            elif mode == "buckling_max" and alpha_target > 0.0:
+                oc_damping = 0.5 if beta < 2.0 else (0.3 if beta < 8.0 else 0.25)
+                move = 0.2 if beta < 2.0 else (0.1 if beta < 4.0 else (0.05 if beta < 8.0 else 0.02))
             else:
                 # Damped OC exponent and reduced move limit at higher beta prevent 0.2 flip-flopping
                 oc_damping = 0.5 if beta < 2.0 else 0.3
@@ -625,8 +674,16 @@ class SIMPOptimizer2D:
 
             # Stopping criterion: relative compliance change over last 10 iterations evaluated only at maximum beta
             if tol_c is not None and tol_c > 0 and beta >= beta_max and beta_max_count >= 11 and len(c_history) >= 11:
-                rel_dC = abs(c_history[-1] - c_history[-11]) / max(abs(c_history[-1]), 1e-12)
-                if rel_dC < tol_c:
+                if mode == "buckling_max" and alpha_target > 0.0 and not legacy_schedule:
+                    c_win = c_history[-11:]
+                    rel_dC = (max(c_win) - min(c_win)) / max(abs(c_history[-1]), 1e-12)
+                    b_win = blf_history[-11:] if len(blf_history) >= 11 else [blf_history[-1]]
+                    rel_dBLF = (max(b_win) - min(b_win)) / max(abs(blf_history[-1]), 1e-12)
+                    is_stable_10 = (rel_dC < tol_c) and (rel_dBLF < 0.005)
+                else:
+                    rel_dC = abs(c_history[-1] - c_history[-11]) / max(abs(c_history[-1]), 1e-12)
+                    is_stable_10 = (rel_dC < tol_c)
+                if is_stable_10:
                     converged = True
                     tol_str = "0.1%" if abs(tol_c - 0.001) < 1e-6 else f"{tol_c:.2%}"
                     convergence_reason = f"objective stable: ΔC_10={rel_dC:.4%} < {tol_str}"
@@ -637,27 +694,31 @@ class SIMPOptimizer2D:
                 convergence_reason = f"change={change:.4f} < tol={tol}"
                 break
 
-        # If mode == "buckling_max" and alpha == 0.0, evaluate BLF once at the end so metrics are populated
+        # If mode == "buckling_max" and alpha == 0.0, evaluate BLF once at the end on last_xPhys so K and G match
         if mode == "buckling_max" and len(blf_history) == 0 and last_U_e is not None:
+            nEig_eff = nEig if legacy_schedule else (max(nEig, 6) if nEig > 1 else 1)
+            ks_rho_eff = ks_rho if legacy_schedule else min(ks_rho, 20.0)
             final_blf, _ = self._compute_lba(
                 U_e=last_U_e,
-                xPhys=xPhys,
+                xPhys=last_xPhys,
                 Emin_abs=Emin_abs,
                 iK=iK,
                 jK=jK,
                 free_dofs=free_dofs,
                 K_free=last_K_free,
                 solve_K=last_solve_K,
-                nEig=nEig,
-                ks_rho=ks_rho,
+                nEig=nEig_eff,
+                ks_rho=ks_rho_eff,
                 compute_sens=False,
+                legacy_schedule=legacy_schedule,
             )
             blf_history.append(final_blf)
 
+        final_xPhys = last_xPhys if (mode == "buckling_max" and not legacy_schedule) else xPhys
         density_matrix = np.zeros((self.nely, self.nelx), dtype=np.float64)
         for elx in range(self.nelx):
             for ely in range(self.nely):
-                density_matrix[ely, elx] = xPhys[elx * self.nely + ely]
+                density_matrix[ely, elx] = final_xPhys[elx * self.nely + ely]
 
         exec_time = time.time() - start_time
         last_change = ch_history[-1] if ch_history else 0.0

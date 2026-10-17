@@ -318,6 +318,42 @@ class TestSIMPEngine2D(unittest.TestCase):
         self.assertNotIn("converged", res_10.status_message)
         self.assertNotIn("objective stable", res_10.status_message)
 
+    def test_10_pareto_alpha_sweep_monotonic_and_lba_consistent(self):
+        """
+        Verify that a multi-point Pareto alpha sweep produces non-dominated points
+        with monotonically increasing BLF from alpha=0.0 to alpha=1.0 (no high-alpha
+        tension-chord erosion or period-2 limit-cycle collapse).
+        """
+        opt = SIMPOptimizer2D(
+            nelx=40, nely=20, dx=2.0, dy=2.0,
+            thickness=5.0, E0=68900.0, nu=0.33,
+            penal=3.0, rmin=3.0, volfrac=0.40
+        )
+        opt.fix_wall("left", fix_x=True, fix_y=True)
+        opt.add_load(40, 0, fx=0.0, fy=-1000.0)
+
+        alphas = [0.0, 0.3, 0.6, 1.0]
+        results = [
+            opt.solve(max_iter=75, tol=0.01, mode="buckling_max", alpha_buckling=a, nEig=4)
+            for a in alphas
+        ]
+
+        self.assertEqual(len(results), 4)
+        blfs = [r.blf_history[-1] for r in results]
+        comps = [r.compliance for r in results]
+
+        # Every step in alpha must strictly increase BLF and compliance (0 dominated points)
+        for i in range(len(alphas) - 1):
+            self.assertGreater(
+                blfs[i + 1], blfs[i],
+                f"Expected BLF at alpha={alphas[i+1]} ({blfs[i+1]:.2f}) > BLF at alpha={alphas[i]} ({blfs[i]:.2f})"
+            )
+            self.assertGreater(
+                comps[i + 1], comps[i],
+                f"Expected compliance at alpha={alphas[i+1]} ({comps[i+1]:.2f}) > compliance at alpha={alphas[i]} ({comps[i]:.2f})"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
+
