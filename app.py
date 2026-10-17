@@ -21,7 +21,7 @@ from physics_engine.simp_engine_2d import SIMPOptimizer2D
 # Streamlit Page Setup
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Topology Optimization: SIMP & Buckling Analysis",
+    page_title="Topology optimization: SIMP and buckling analysis",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -65,8 +65,8 @@ st.markdown("""
 # -----------------------------------------------------------------------------
 # Main Header
 # -----------------------------------------------------------------------------
-st.markdown('<div class="main-header">Topology Optimization: SIMP & Buckling Analysis</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">SIMP Continuous Domain Optimization with Linearized Buckling Analysis</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">Topology optimization: SIMP and buckling analysis</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">SIMP continuous domain optimization with linearized buckling analysis</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # Parameter Configuration
@@ -74,35 +74,35 @@ st.markdown('<div class="sub-header">SIMP Continuous Domain Optimization with Li
 col_s1, col_s2, col_s3 = st.columns(3)
 
 with col_s1:
-    st.markdown("**1. Domain & Material Properties**")
+    st.markdown("**1. Domain and material properties**")
     nelx_in = st.number_input("Elements X (nelx)", min_value=10, max_value=240, value=55, step=2)
     nely_in = st.number_input("Elements Y (nely)", min_value=6, max_value=120, value=25, step=2)
-    dx_in = st.number_input("Element Size dx (mm)", min_value=0.2, max_value=20.0, value=2.0, step=0.5)
-    dy_in = st.number_input("Element Size dy (mm)", min_value=0.2, max_value=20.0, value=2.0, step=0.5)
+    dx_in = st.number_input("Element size dx (mm)", min_value=0.2, max_value=20.0, value=2.0, step=0.5)
+    dy_in = st.number_input("Element size dy (mm)", min_value=0.2, max_value=20.0, value=2.0, step=0.5)
     thickness_in = st.number_input("Thickness t (mm)", min_value=0.1, max_value=100.0, value=5.0, step=0.5)
-    E0_in = st.number_input("Young's Modulus E0 (MPa)", min_value=1.0, max_value=500000.0, value=68900.0, step=1000.0)
-    nu_in = st.number_input("Poisson's Ratio (ν)", min_value=0.0, max_value=0.49, value=0.33, step=0.01)
+    E0_in = st.number_input("Young's modulus E0 (MPa)", min_value=1.0, max_value=500000.0, value=68900.0, step=1000.0)
+    nu_in = st.number_input("Poisson's ratio (ν)", min_value=0.0, max_value=0.49, value=0.33, step=0.01)
 
 with col_s2:
-    st.markdown("**2. Optimization Parameters**")
-    volfrac_in = st.slider("Target Volume Fraction (Vf)", min_value=0.10, max_value=0.85, value=0.40, step=0.05)
+    st.markdown("**2. Optimization parameters**")
+    volfrac_in = st.slider("Target volume fraction (Vf)", min_value=0.10, max_value=0.85, value=0.40, step=0.05)
     
-    st.markdown("**(CRITICAL) Pareto Trade-off Weight**")
-    alpha_in = st.slider("Buckling Reinforcement Factor (α)", min_value=0.00, max_value=0.90, value=0.40, step=0.05)
+    st.markdown("**Pareto trade-off weight (critical)**")
+    alpha_in = st.slider("Buckling reinforcement factor (α)", min_value=0.00, max_value=0.90, value=0.40, step=0.05)
     
-    rmin_in = st.slider("Filter Radius r_min (mm)", min_value=1.5, max_value=15.0, value=5.0, step=0.5)
+    rmin_in = st.slider("Filter radius r_min (mm)", min_value=1.5, max_value=15.0, value=5.0, step=0.5)
     rmin_elems = rmin_in / max(dx_in, dy_in)
     if rmin_elems < 2.0:
         st.caption(f"⚠️ r_min = {rmin_elems:.2f} elements: minimal filtering (mesh-scale features possible; use ≈ 2.5–3 elements for mesh independence).")
     else:
         st.caption(f"Filter span: {rmin_elems:.2f} elements")
-    penal_in = st.number_input("SIMP Penalization (p)", min_value=1.0, max_value=4.0, value=3.0, step=0.5)
-    max_iter_in = st.number_input("Max Iterations", min_value=10, max_value=300, value=100, step=5)
+    penal_in = st.number_input("SIMP penalization (p)", min_value=1.0, max_value=4.0, value=3.0, step=0.5)
+    max_iter_in = st.number_input("Max iterations", min_value=10, max_value=300, value=100, step=5)
     
-    st.markdown("**Buckling Aggregation Method**")
+    st.markdown("**Buckling aggregation method**")
     agg_method = st.radio(
         "Aggregation", 
-        ["Weighted Sum (Fundamental Mode, nEig=1)", "KS Aggregator (Multiple Modes, nEig>1)"], 
+        ["Weighted sum (fundamental mode, nEig=1)", "KS aggregator (multiple modes, nEig>1)"], 
         index=1, 
         label_visibility="collapsed"
     )
@@ -112,28 +112,28 @@ with col_s2:
         nEig_in = 1
 
 with col_s3:
-    st.markdown("**3. Boundary Conditions & Loads**")
+    st.markdown("**3. Boundary conditions and loads**")
     bc_type = st.selectbox(
-        "Support Scheme:",
+        "Support scheme:",
         options=[
-            "Full Left Wall Fixation (x = 0)",
-            "Two Bottom Supports (x=0 and x=L)",
-            "Partial Left Wall Fixation",
-            "Custom Nodes"
+            "Full left wall fixation (x = 0)",
+            "Two bottom supports (x=0 and x=L)",
+            "Partial left wall fixation",
+            "Custom nodes"
         ],
         index=0
     )
 
     custom_sup_str = ""
-    if bc_type == "Custom Nodes":
+    if bc_type == "Custom nodes":
         custom_sup_str = st.text_input(
-            f"Support Nodes [X_mm, Y_mm] (0..{nelx_in * dx_in}, 0..{nely_in * dy_in})",
+            f"Support nodes [X_mm, Y_mm] (0..{nelx_in * dx_in}, 0..{nely_in * dy_in})",
             value=f"(0, 0), (0, {nely_in * dy_in})"
         )
 
     def_load_str = f"({nelx_in * dx_in}, 0, 0, -1000)"
     loads_str = st.text_area(
-        f"External Forces [X_mm, Y_mm, Fx_N, Fy_N]",
+        f"External forces [X_mm, Y_mm, Fx_N, Fy_N]",
         value=def_load_str,
         height=75
     )
@@ -141,7 +141,7 @@ with col_s3:
 # Parse and validate inputs
 import re
 sup_nodes = []
-if bc_type == "Custom Nodes":
+if bc_type == "Custom nodes":
     sup_matches = re.findall(r"\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)", custom_sup_str)
     sup_nodes = [(int(float(x) / dx_in), int(float(y) / dy_in)) for x, y in sup_matches]
 
@@ -154,7 +154,7 @@ if invalid_loads:
 
 num_elements = int(nelx_in) * int(nely_in)
 if num_elements > 20000:
-    st.warning(f"⚠️ Warning: The domain contains {num_elements} elementi. Linearized Buckling Analysis (LBA) requires solving a generalized eigenvalue problem on very large matrices. This analysis will take several minutes, especially when generating the Pareto frontier (which repeats the calculation 11 times).")
+    st.warning(f"⚠️ Warning: the domain contains {num_elements} elements. Linearized buckling analysis (LBA) requires solving a generalized eigenvalue problem on large matrices. This analysis will take several minutes, especially when generating the Pareto frontier (which repeats the calculation 11 times).")
 
 # Cache key
 simp_key = (
@@ -167,7 +167,7 @@ simp_key = (
 
 
 
-if st.button("Run Topology Optimization", type="primary"):
+if st.button("Run topology optimization", type="primary"):
     with st.container():
         try:
             progress_bar = st.progress(0)
@@ -176,7 +176,7 @@ if st.button("Run Topology Optimization", type="primary"):
             def update_progress(it, max_it):
                 pct = int((it / max_it) * 100)
                 progress_bar.progress(it / max_it)
-                progress_text.info(f"🚀 Executing SIMP Optimization... Iteration {it}/{max_it} - {pct}% complete...")
+                progress_text.info(f"🚀 Executing SIMP optimization... Iteration {it}/{max_it} — {pct}% complete...")
             optimizer = SIMPOptimizer2D(
                 nelx=int(nelx_in), nely=int(nely_in), dx=float(dx_in), dy=float(dy_in),
                 thickness=float(thickness_in), E0=float(E0_in), nu=float(nu_in),
@@ -184,16 +184,16 @@ if st.button("Run Topology Optimization", type="primary"):
             )
 
             # Apply boundary conditions
-            if bc_type == "Full Left Wall Fixation (x = 0)":
+            if bc_type == "Full left wall fixation (x = 0)":
                 optimizer.fix_wall("left", fix_x=True, fix_y=True)
-            elif bc_type == "Two Bottom Supports (x=0 and x=L)":
+            elif bc_type == "Two bottom supports (x=0 and x=L)":
                 optimizer.fix_node(0, 0, fix_x=True, fix_y=True)
                 optimizer.fix_node(int(nelx_in), 0, fix_x=False, fix_y=True)
-            elif bc_type == "Partial Left Wall Fixation":
+            elif bc_type == "Partial left wall fixation":
                 mid_y = int(nely_in) // 2
                 for jy in range(max(0, mid_y - 2), min(int(nely_in) + 1, mid_y + 3)):
                     optimizer.fix_node(0, jy, fix_x=True, fix_y=True)
-            elif bc_type == "Custom Nodes":
+            elif bc_type == "Custom nodes":
                 for sx, sy in sup_nodes:
                     optimizer.fix_node(sx, sy, fix_x=True, fix_y=True)
 
@@ -216,7 +216,7 @@ optimizer = st.session_state.get("simp_optimizer", None)
 
 
 def render_main_visualization(optimizer, simp_res):
-    st.markdown("#### Topology Metrics")
+    st.markdown("#### Topology metrics")
     st.caption(simp_res.status_message)
     sm1, sm2, sm3, sm4, sm5 = st.columns(5)
     sm1.metric("Compliance (C)", f"{simp_res.compliance:.2f} N·mm")
@@ -224,19 +224,19 @@ def render_main_visualization(optimizer, simp_res):
         sm2.metric("Buckling (BLF)", f"{simp_res.blf_history[-1]:.3f}")
     else:
         sm2.metric("Buckling (BLF)", "N/A")
-    sm3.metric("Volume Frac", f"{simp_res.volume_fraction*100:.1f}%")
+    sm3.metric("Volume fraction", f"{simp_res.volume_fraction*100:.1f}%")
     sm4.metric("Iterations", f"{simp_res.iterations_run} / {int(max_iter_in)}")
     sm5.metric("Time", f"{simp_res.execution_time_sec:.1f} s")
 
     col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 1])
     with col_ctrl1:
         view_style_choice = st.selectbox(
-            "View Style:",
+            "View style:",
             options=["silhouette_bw", "stress_masked"],
-            format_func=lambda x: "Solid Silhouette (B&W)" if x == "silhouette_bw" else "Stress Heatmap"
+            format_func=lambda x: "Solid silhouette (B&W)" if x == "silhouette_bw" else "Stress heatmap"
         )
     with col_ctrl2:
-        dens_threshold = st.slider("Density Threshold", min_value=0.10, max_value=0.85, value=0.40, step=0.02)
+        dens_threshold = st.slider("Density threshold", min_value=0.10, max_value=0.85, value=0.40, step=0.02)
     with col_ctrl3:
         st.markdown("<br>", unsafe_allow_html=True)
         smooth_viz = st.checkbox("Smooth visualization", value=False)
@@ -263,15 +263,15 @@ if simp_res is not None and simp_res.success and optimizer is not None:
     
     @st.fragment
     def render_pareto_section():
-        if st.button("Generate Pareto Alpha Sweep"):
+        if st.button("Generate Pareto alpha sweep"):
             alphas = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
             
-            st.markdown("#### Pareto Frontier Sweep")
+            st.markdown("#### Pareto frontier sweep")
             st.markdown(
-                "This procedure generates the Pareto Frontier a posteriori. "
-                "The **α** parameter mathematically balances bending stiffness (Compliance) and structural stability (Buckling).<br>"
-                "- **α near 0**: Designed exclusively for maximum stiffness (thinner members, high buckling risk).<br>"
-                "- **α near 1**: Designed to delay buckling as much as possible (thicker, aligned members, at the expense of global compliance).",
+                "This procedure generates the Pareto frontier a posteriori. "
+                "The **α** parameter mathematically balances bending stiffness (compliance) and structural stability (buckling).<br>"
+                "- **α near 0**: designed exclusively for maximum stiffness (thinner members, higher buckling risk).<br>"
+                "- **α near 1**: designed to delay buckling as much as possible (thicker, aligned members, at the expense of global compliance).",
                 unsafe_allow_html=True
             )
             
@@ -284,7 +284,7 @@ if simp_res is not None and simp_res.success and optimizer is not None:
             
             for i, a in enumerate(alphas):
                 pct = int(((i+1)/len(alphas))*100)
-                progress_text.info(f"⏳ Computing alpha = {a:.1f} ({i+1}/{len(alphas)}) - {pct}%...")
+                progress_text.info(f"⏳ Computing alpha = {a:.1f} ({i+1}/{len(alphas)}) — {pct}%...")
                 
                 # Create a clone of the optimizer for the run
                 opt_clone = SIMPOptimizer2D(
@@ -293,16 +293,16 @@ if simp_res is not None and simp_res.success and optimizer is not None:
                     penal=float(penal_in), rmin=float(rmin_in), volfrac=float(volfrac_in)
                 )
                 # Re-apply BCs
-                if bc_type == "Full Left Wall Fixation (x = 0)":
+                if bc_type == "Full left wall fixation (x = 0)":
                     opt_clone.fix_wall("left", fix_x=True, fix_y=True)
-                elif bc_type == "Two Bottom Supports (x=0 and x=L)":
+                elif bc_type == "Two bottom supports (x=0 and x=L)":
                     opt_clone.fix_node(0, 0, fix_x=True, fix_y=True)
                     opt_clone.fix_node(int(nelx_in), 0, fix_x=False, fix_y=True)
-                elif bc_type == "Partial Left Wall Fixation":
+                elif bc_type == "Partial left wall fixation":
                     mid_y = int(nely_in) // 2
                     for jy in range(max(0, mid_y - 2), min(int(nely_in) + 1, mid_y + 3)):
                         opt_clone.fix_node(0, jy, fix_x=True, fix_y=True)
-                elif bc_type == "Custom Nodes":
+                elif bc_type == "Custom nodes":
                     for sx, sy in sup_nodes:
                         opt_clone.fix_node(sx, sy, fix_x=True, fix_y=True)
 

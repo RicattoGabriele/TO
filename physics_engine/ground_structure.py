@@ -471,7 +471,7 @@ class GroundStructure2D:
             elif is_active:
                 active_x.append(n.x)
                 active_y.append(n.y)
-                active_txt.append(f"Nodo Attivo ({n.ix}, {n.iy})")
+                active_txt.append(f"Nodo attivo ({n.ix}, {n.iy})")
             elif show_all_nodes:
                 inactive_x.append(n.x)
                 inactive_y.append(n.y)
@@ -483,7 +483,7 @@ class GroundStructure2D:
                 mode="markers",
                 marker=dict(size=4, color="#475569"),
                 hoverinfo="none",
-                name="Vuoto (Inattivo)"
+                name="Vuoto (inattivo)"
             ))
 
         # Active nodes
@@ -494,7 +494,7 @@ class GroundStructure2D:
                 marker=dict(size=6, color="#93c5fd", line=dict(color="#1e3a8a", width=1)),
                 hoverinfo="text",
                 hovertext=active_txt,
-                name="Nodi Attivi"
+                name="Nodi attivi"
             ))
 
         # Fixed supports
@@ -516,7 +516,7 @@ class GroundStructure2D:
                 marker=dict(size=12, symbol="circle", color="#ef4444", line=dict(color="#ffffff", width=1.5)),
                 hoverinfo="text",
                 hovertext=loaded_txt,
-                name="Carico Applicato"
+                name="Carico applicato"
             ))
 
         # Add load arrows (annotations)

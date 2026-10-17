@@ -731,7 +731,7 @@ class SIMPOptimizer2D:
             zmin=0.0,
             zmax=1.0,
             colorbar=dict(
-                title=dict(text="Relative Density ρ", font=dict(color="#f8fafc", size=11)),
+                title=dict(text="Relative density ρ", font=dict(color="#f8fafc", size=11)),
                 tickfont=dict(color="#94a3b8", size=10),
                 len=0.85
             ),
@@ -753,7 +753,7 @@ class SIMPOptimizer2D:
             line=dict(color="#ffffff", width=2.5, dash="solid"),
             showscale=False,
             hoverinfo="none",
-            name=f"Solid Boundary (ρ = {threshold:.2f})"
+            name=f"Solid boundary (ρ = {threshold:.2f})"
         ))
 
         # 3. Add Boundary Conditions
@@ -808,7 +808,7 @@ class SIMPOptimizer2D:
                 marker=dict(size=9, symbol="square", color="#333333", line=dict(color="#78350f", width=1.5)),
                 hoverinfo="text",
                 hovertext=fixed_labels,
-                name="Fixed Support"
+                name="Fixed support"
             ))
 
         # Load markers
@@ -819,7 +819,7 @@ class SIMPOptimizer2D:
                 marker=dict(size=10, symbol="circle", color="#ef4444", line=dict(color="#ffffff", width=1.5)),
                 hoverinfo="text",
                 hovertext=loaded_labels,
-                name="Applied Load"
+                name="Applied load"
             ))
 
         fig.update_layout(
@@ -981,8 +981,8 @@ class SIMPOptimizer2D:
             fig = make_subplots(
                 rows=1, cols=2,
                 subplot_titles=(
-                    "<b>Optimized Topology (Solid Silhouette)</b>",
-                    "<b>Signed Principal Stress Distribution</b>"
+                    "<b>Optimized topology (solid silhouette)</b>",
+                    "<b>Signed principal stress distribution</b>"
                 ),
                 horizontal_spacing=0.08
             )
@@ -1023,7 +1023,7 @@ class SIMPOptimizer2D:
                     zmin=min_val,
                     zmax=max_val,
                     colorbar=dict(
-                        title=dict(text="Principal Stress [MPa]", font=dict(color="#f8fafc", size=11)),
+                        title=dict(text="Principal stress [MPa]", font=dict(color="#f8fafc", size=11)),
                         tickfont=dict(color="#94a3b8", size=10),
                         len=0.85,
                         x=1.02
@@ -1095,7 +1095,7 @@ class SIMPOptimizer2D:
                     name="Structure"
                 ))
             if fixed_x:
-                fig.add_trace(go.Scatter(x=fixed_x, y=fixed_y, mode="markers", marker=dict(size=8, symbol="square", color="#333333"), name="Fixed Support"))
+                fig.add_trace(go.Scatter(x=fixed_x, y=fixed_y, mode="markers", marker=dict(size=8, symbol="square", color="#333333"), name="Fixed support"))
             if loaded_x:
                 fig.add_trace(go.Scatter(x=loaded_x, y=loaded_y, mode="markers", marker=dict(size=9, symbol="circle", color="#ef4444"), name="Load"))
             for xp, yp, ax, ay, txt in loaded_arrows:
@@ -1126,7 +1126,7 @@ class SIMPOptimizer2D:
                     contours_coloring="heatmap",
                     line_width=0,
                     colorbar=dict(
-                        title=dict(text="Principal Stress [MPa]", font=dict(color="#f8fafc", size=11)),
+                        title=dict(text="Principal stress [MPa]", font=dict(color="#f8fafc", size=11)),
                         tickfont=dict(color="#94a3b8", size=10),
                         len=0.85
                     ),
@@ -1143,7 +1143,7 @@ class SIMPOptimizer2D:
                     zmin=min_val,
                     zmax=max_val,
                     colorbar=dict(
-                        title=dict(text="Principal Stress [MPa]", font=dict(color="#f8fafc", size=11)),
+                        title=dict(text="Principal stress [MPa]", font=dict(color="#f8fafc", size=11)),
                         tickfont=dict(color="#94a3b8", size=10),
                         len=0.85
                     ),
@@ -1151,7 +1151,7 @@ class SIMPOptimizer2D:
                     name="Stress"
                 ))
             if fixed_x:
-                fig.add_trace(go.Scatter(x=fixed_x, y=fixed_y, mode="markers", marker=dict(size=8, symbol="square", color="#333333"), name="Fixed Support"))
+                fig.add_trace(go.Scatter(x=fixed_x, y=fixed_y, mode="markers", marker=dict(size=8, symbol="square", color="#333333"), name="Fixed support"))
             if loaded_x:
                 fig.add_trace(go.Scatter(x=loaded_x, y=loaded_y, mode="markers", marker=dict(size=9, symbol="circle", color="#ef4444"), name="Load"))
             for xp, yp, ax, ay, txt in loaded_arrows:
