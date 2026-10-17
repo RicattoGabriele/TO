@@ -204,6 +204,8 @@ if st.button("Run topology optimization", type="primary"):
             progress_text.empty()
             progress_bar.empty()
 
+            if st.session_state.get("simp_key") != simp_key:
+                st.session_state["pareto_results"] = None
             st.session_state.simp_key = simp_key
             st.session_state.simp_optimizer = optimizer
             st.session_state.simp_result = simp_res
@@ -263,18 +265,62 @@ if simp_res is not None and simp_res.success and optimizer is not None:
     
     @st.fragment
     def render_pareto_section():
-        if st.button("Generate Pareto alpha sweep"):
-            alphas = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-            
-            st.markdown("#### Pareto frontier sweep")
-            st.markdown(
-                "This procedure generates the Pareto frontier a posteriori. "
-                "The **α** parameter mathematically balances bending stiffness (compliance) and structural stability (buckling).<br>"
-                "- **α near 0**: designed exclusively for maximum stiffness (thinner members, higher buckling risk).<br>"
-                "- **α near 1**: designed to delay buckling as much as possible (thicker, aligned members, at the expense of global compliance).",
-                unsafe_allow_html=True
+        st.markdown("#### Pareto frontier sweep")
+        st.markdown(
+            "This procedure generates the Pareto frontier a posteriori. "
+            "The **α** parameter mathematically balances bending stiffness (compliance) and structural stability (buckling).<br>"
+            "- **α near 0**: designed exclusively for maximum stiffness (thinner members, higher buckling risk).<br>"
+            "- **α near 1**: designed to delay buckling as much as possible (thicker, aligned members, at the expense of global compliance).",
+            unsafe_allow_html=True
+        )
+
+        col_p_btn, col_p_style, col_p_thresh, col_p_smooth = st.columns([1.5, 1.5, 1.2, 1])
+        with col_p_btn:
+            st.markdown("<br>", unsafe_allow_html=True)
+            run_sweep = st.button("Generate Pareto alpha sweep")
+        with col_p_style:
+            p_view_style = st.selectbox(
+                "Sweep view style:",
+                options=["silhouette_bw", "stress_masked", "density"],
+                format_func=lambda x: "Solid silhouette (B&W)" if x == "silhouette_bw" else ("Stress heatmap" if x == "stress_masked" else "Density heatmap"),
+                key="pareto_view_style_select"
             )
-            
+        with col_p_thresh:
+            p_thresh = st.slider("Density threshold", min_value=0.10, max_value=0.85, value=0.40, step=0.02, key="pareto_dens_thresh")
+        with col_p_smooth:
+            st.markdown("<br>", unsafe_allow_html=True)
+            p_smooth = st.checkbox("Smooth visualization", value=True, key="pareto_smooth_checkbox")
+
+        def make_pareto_card(opt_obj, res_obj, alpha_val):
+            f_p = opt_obj.to_scientific_figures(
+                res=res_obj,
+                threshold=p_thresh,
+                view_style=p_view_style,
+                colormap="Jet_r",
+                smooth=p_smooth
+            )
+            if p_view_style == "stress_masked":
+                f_p.update_traces(
+                    selector=dict(type="contour"),
+                    colorbar=dict(title=dict(text="σ [MPa]", font=dict(size=9)), tickfont=dict(size=9), len=0.85)
+                )
+                f_p.update_traces(
+                    selector=dict(type="heatmap"),
+                    colorbar=dict(title=dict(text="σ [MPa]", font=dict(size=9)), tickfont=dict(size=9), len=0.85)
+                )
+                f_p.update_layout(height=260, margin=dict(l=15, r=35, t=15, b=15))
+            elif p_view_style == "density":
+                f_p.update_traces(
+                    selector=dict(type="heatmap"),
+                    colorbar=dict(title=dict(text="ρ", font=dict(size=9)), tickfont=dict(size=9), len=0.85)
+                )
+                f_p.update_layout(height=260, margin=dict(l=15, r=35, t=15, b=15))
+            else:
+                f_p.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10))
+            return f_p
+
+        if run_sweep:
+            alphas = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
             progress_text = st.empty()
             progress_bar = st.progress(0)
             
@@ -282,8 +328,10 @@ if simp_res is not None and simp_res.success and optimizer is not None:
             cols = st.columns(3)
             placeholders = [cols[i % 3].empty() for i in range(len(alphas))]
             
+            pareto_data = []
+            
             for i, a in enumerate(alphas):
-                pct = int(((i+1)/len(alphas))*100)
+                pct = int(((i + 1) / len(alphas)) * 100)
                 progress_text.info(f"⏳ Computing alpha = {a:.1f} ({i+1}/{len(alphas)}) — {pct}%...")
                 
                 # Create a clone of the optimizer for the run
@@ -309,18 +357,35 @@ if simp_res is not None and simp_res.success and optimizer is not None:
                 for lx, ly, fx, fy in loads_simp:
                     opt_clone.add_load(lx, ly, fx=fx, fy=fy)
 
-                res_alpha = opt_clone.solve(max_iter=int(max_iter_in), tol=0.01, mode="buckling_max", alpha_buckling=a, nEig=int(nEig_in))
+                res_alpha = opt_clone.solve(
+                    max_iter=int(max_iter_in), tol=0.01,
+                    mode="buckling_max", alpha_buckling=a, nEig=int(nEig_in)
+                )
                 
                 if res_alpha.success:
+                    pareto_data.append((a, opt_clone, res_alpha))
                     with placeholders[i].container():
                         st.markdown(f"**α = {a:.1f}**")
                         st.caption(f"C: {res_alpha.compliance:.1f} N·mm | BLF: {res_alpha.blf_history[-1] if res_alpha.blf_history else 'N/A':.3f}")
-                        f_plot = opt_clone.to_scientific_figures(res=res_alpha, threshold=0.40, view_style="silhouette_bw", smooth=True)
-                        f_plot.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10))
+                        f_plot = make_pareto_card(opt_clone, res_alpha, a)
                         st.plotly_chart(f_plot, use_container_width=True)
                 
                 progress_bar.progress((i + 1) / len(alphas))
                 
             progress_text.empty()
+            progress_bar.empty()
+            st.session_state["pareto_results"] = pareto_data
+            st.session_state["pareto_key"] = simp_key
+            st.rerun(scope="fragment")
+
+        elif "pareto_results" in st.session_state and st.session_state["pareto_results"]:
+            pareto_data = st.session_state["pareto_results"]
+            cols = st.columns(3)
+            for i, (a, opt_clone, res_alpha) in enumerate(pareto_data):
+                with cols[i % 3].container():
+                    st.markdown(f"**α = {a:.1f}**")
+                    st.caption(f"C: {res_alpha.compliance:.1f} N·mm | BLF: {res_alpha.blf_history[-1] if res_alpha.blf_history else 'N/A':.3f}")
+                    f_plot = make_pareto_card(opt_clone, res_alpha, a)
+                    st.plotly_chart(f_plot, use_container_width=True)
             
     render_pareto_section()
