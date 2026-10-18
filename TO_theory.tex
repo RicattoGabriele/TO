@@ -1,0 +1,320 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath, amssymb}
+
+\title{Multi-agentic implementation of a 2D topology \\ optimization framework for compliance and \\ linearized buckling via weighted sum method}
+\author{Gabriele Ricatto}
+\date{September 27, 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This paper presents a framework for multi-objective topology optimization, focusing on the trade-off between structural compliance and linear buckling stability. A custom Finite Element Method solver, based on $\mathcal{Q}_4$ bilinear isoparametric elements, is implemented. The material distribution is parameterized utilizing the Solid Isotropic Material with Penalization (SIMP) approach. To explore the Pareto-optimal frontier between global stiffness and the fundamental Buckling Load Factor (BLF), a weighted and normalized sum method is implemented. The proposed framework provides an effective tool for generating preliminary components, illustrating transitions across the design space when stiffness is penalized in favor of structural stability and vice versa. Furthermore, a comparison between the results obtained and those derived from commercial software is presented.
+
+The low-level debugging and code writing were primarily conducted using a multi-agentic human-in-the-loop workflow, leveraging commercially available large language models through Google's Antigravity.
+\end{abstract}
+
+\newpage
+
+\section{FEM implementation}
+
+\noindent For the implementation of the FEM solver, we rely on bilinear isoparametric elements ($\mathcal{Q}_4$) applied to a fully structured mesh. The rectangular elements are aligned with the global reference system, with the origin of the natural coordinates centered in the centroid of each element. The general formulation for variable-size elements has been omitted, as unnecessarily complicated for the purpose of this project. In accordance with the semplifications introduced, the mapping between physical and natural coordinates assumes the following form:
+\begin{equation}
+x = x_1 + \frac{dx}{2}\xi, \quad y = y_1 + \frac{dy}{2}\eta
+\end{equation}
+\noindent with $\eta \in [-1; 1]$ and $\xi \in [-1; 1]$. We can now derive the Jacobian as:
+\begin{equation}
+[J] = \begin{bmatrix} \frac{\partial x}{\partial \xi} & \frac{\partial y}{\partial \xi} \\ \frac{\partial x}{\partial \eta} & \frac{\partial y}{\partial \eta} \end{bmatrix} = \begin{bmatrix} dx/2 & 0 \\ 0 & dy/2 \end{bmatrix} \implies \det(J) = \frac{1}{4}dxdy
+\end{equation}
+\noindent and its inverse:
+\begin{equation}
+[J]^{-1} = \begin{bmatrix} \frac{2}{dx} & 0 \\ 0 & \frac{2}{dy} \end{bmatrix}
+\end{equation}
+\noindent The shape functions are:
+\begin{equation}
+N_1 = \frac{1}{4}(1 - \xi)(1 - \eta)
+\end{equation}
+\begin{equation}
+N_2 = \frac{1}{4}(1 + \xi)(1 - \eta)
+\end{equation}
+\begin{equation}
+N_3 = \frac{1}{4}(1 + \xi)(1 + \eta)
+\end{equation}
+\begin{equation}
+N_4 = \frac{1}{4}(1 - \xi)(1 + \eta)
+\end{equation}
+\noindent The writing and calculation of the elementary stiffness matrix $K_e^0$ are quite simple and are done only once at the beginning of the calculation. After that, in accordance with the SIMP model, at each iteration the following calculation is foreseen:
+\begin{equation}
+[K] = \sum_{e=1}^{m} E_K(\hat{p}_e) \cdot K_e^0 = \sum_{e=1}^{m} [E_{min} + (E_0 - E_{min})\hat{p}_e^{p_K}][K_e^0]
+\end{equation}
+\noindent We have already introduced the parameters $p_K$ and $p_G$, but we have not yet assigned a value to it. In accordance with numerical evidence and those found in literature, we opt to assign both a value equal to 3, so $p_K = p_G = p = 3$ [1]. \\
+\noindent As for the elementary matrix $K_e^0$:
+\begin{equation}
+[K_e^0] = \int_V [B]^T [C] [B] dV
+\end{equation}
+\noindent The element is two-dimensional; thus, assuming a unit thickness, the elemental stiffness matrix is defined as:
+\begin{equation}
+[K_e^0] = \int_\Omega [B]^T [C] [B] \, dxdy
+\end{equation}
+
+where the matrix $[B]$ contains the spatial derivatives of the shape functions. By transitioning to natural coordinates to resolve the integral, the formulation becomes:
+\begin{equation}
+[K_e^0] = \int_{-1}^{1} \int_{-1}^{1} \left(\frac{1}{4}\right)^2 [B(\xi, \eta)]^T [C] [B(\xi, \eta)] \det(J) \, d\eta d\xi
+\end{equation}
+\noindent The elemental geometric stiffness matrix, $G_e^0$, is derived from the linearization of the Principle of Virtual Work:
+\begin{equation}
+[G_e^0] = \int_{\Omega_0} B_1^T T[\sigma_e] B_1 d\Omega_0
+\end{equation}
+\noindent where for a Q4 element the matrix $B_1$ is composed of the gradients of the shape functions, and furthermore we have the stress matrix:
+\begin{equation}
+T[\sigma_e] = \begin{bmatrix} \sigma_x & \tau_{xy} & 0 & 0 \\ \tau_{xy} & \sigma_y & 0 & 0 \\ 0 & 0 & \sigma_x & \tau_{xy} \\ 0 & 0 & \tau_{xy} & \sigma_y \end{bmatrix}
+\end{equation}
+\noindent Where for simplicity, before optimization, the constant elements are pre-calculated by collecting the individual stresses in binary matrices:
+\begin{equation}
+T[\sigma_e] = \sigma_x \begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 0 & 0 & 0 \\ 0 & 0 & 1 & 0 \\ 0 & 0 & 0 & 0 \end{bmatrix} + \sigma_y \cdots + \tau_{xy} \dots
+\end{equation}
+
+The objective of the decomposition proposed is to separate the state-dependent variables (local stresses) from the geometric constant terms. By substituting the decomposed stress matrix back into the integral, the scalar stress components can be extracted from the integral as follows:
+\begin{equation}
+[G_e^0] = \sigma_x \int_{\Omega_0} B_1^T T_x B_1, d\Omega_0 + \sigma_y \int_{\Omega_0} B_1^T T_y B_1, d\Omega_0 + \tau_{xy} \int_{\Omega_0} B_1^T T_{xy} B_1, d\Omega_0
+\end{equation}
+\noindent where $T_x, T_y$, and $T_{xy}$ denote the constant basis matrices presented in (14). This mathematical arrangement yields a significant computational advantage since the three integral terms now depend exclusively on the element geometry and the shape functions, which remain invariant throughout the optimization process on a fixed mesh. Consequently, these matrices can be evaluated exactly once during the pre-processing phase: by doing so, within the optimization loop they will simply be scaled by the updated stress values at each iteration.
+
+\vspace{\baselineskip}
+To to give a better insight of the FEM workflow, in the following one can find the steps persecuted by the solver:
+\begin{enumerate}
+    \item For each element in the mesh, $K_e^0$ is evaluated. This computation is performed only once during the pre-processing phase. With the results obtained, the global stiffness matrix $[K]$ is assembled by penalizing the elemental matrices according to the SIMP interpolation scheme, $K_e = E(x_e)K_e^0$.
+    \item Boundary conditions (loads and constraints) are applied and the system $KU = F$ is solved.
+    \item Having retrieved the global displacement vector $U$, the overall structural compliance is evaluated as $C = U^T K U$.
+    \item The assembly of the geometric stiffness matrix $G$ requires the local stress state of each element. Extracting the local nodal displacements $u_e$ from the global vector $U$, the elemental strains and stresses are computed using $\epsilon_e = B u_e$ and $\sigma_e = D \epsilon_e$.
+    \item The linear buckling eigenvalue problem $[K + \lambda_i G]\{\phi_i\} = \{0\}$ is solved to extract the fundamental buckling load factors $\lambda$ and their corresponding eigenmodes $\phi$. These results will then be used by the optimizer.
+\end{enumerate}
+
+\section{Optimization problem setup}
+
+\noindent In accordance with [7], the spatial domain is discretized in $m$ equal elements for a total of $n$ \textit{Degrees of Freedom} (DOFs). We also define the pseudo-density field as $\hat{x} = \{\hat{x}_e\}_{e=1}^m$, that are partitioned between 3 sets:
+\begin{enumerate}
+    \item $\Omega_{p_0} \rightarrow$ passive regions where $\hat{x}_e = 0$ (forced void)
+    \item $\Omega_{p_1} \rightarrow$ passive regions where $\hat{x}_e = 1$ (forced solid)
+    \item $\Omega_A \rightarrow$ actual domain with active design space variables.
+\end{enumerate}
+
+In the design space, density $\hat{x}_e$ is obtained through a smoothed heaviside projection [8]:
+\begin{equation}
+\hat{x}_e = \frac{\tanh(\beta\eta) + \tanh(\beta(\tilde{x}_e - \eta))}{\tanh(\beta\eta) + \tanh(\beta(1 - \eta))}
+\end{equation}
+\noindent with $\eta \in [0, 1]$ and $\beta \in [1, \infty)$. This equation, using the hyperbolic tangent, forces the intermediate values towards 0 and 1, in order to decrease the shades and define sharper boundaries. \\
+\noindent The intermediate variable $\tilde{x}_e$ represents the filtered density, calculated via:
+\begin{equation}
+\tilde{x}_e = \frac{\sum_{i=1}^m h_{ei} x_i}{\sum_{i=1}^m h_{ei}}
+\end{equation}
+\noindent with $h_{ei} = \max(0, r_{min} - dist(\Omega_i, \Omega_e))$. In this expression, $r_{min}$ specifies the filter radius, and $\text{dist}(\Omega_i, \Omega_e)$ represents the center-to-center distance between elements $i$ and $e$. The introduction of the previous formulation is needed in order to exclude elements further than $r_{min}$ from an element $e$, thus increasing the weight of elements close to $e$. Ultimately, these measures prevent the generation of mesh-dependent solutions and checkerboarding patterns.
+
+\vspace{\baselineskip}
+Let the Young's modulus be parametrized by the SIMP interpolations with penalizations $p_K, p_G > 1$
+\begin{equation}
+E_K(\hat{x}_e) = E_{min} + (E_0 - E_{min})\hat{x}_e^{p_K}
+\end{equation}
+\begin{equation}
+E_G(\hat{x}_e) = E_0 \hat{x}_e^{p_G}
+\end{equation}
+
+where $E_0$ represents the elastic modulus of the solid base material, and $E_{min} \ll E_0$ is a positive lower bound (in this case, set to $10^{-9}$).
+
+\vspace{\baselineskip}
+The volume fraction is defined as $f(\hat{x}) = \frac{1}{m}\sum_{e=1}^m \hat{x}_e$. Alongside this we introduce the compliance $C(\hat{x}) = F^T U(\hat{x})$, which represents the external work done by the loads: minimizing this compliance is equivalent to maximizing the global stiffness of the design.
+
+To predict structural instability while maintaining computational efficiency, a linearized buckling analysis is adopted. This requires solving the following generalized eigenvalue problem:
+\begin{equation}
+(K + \lambda_i G)\phi_i = 0
+\end{equation}
+
+Specifically, the fundamental Buckling Load Factor (BLF), denoted as $\lambda_1$, is retrieved through the minimization of:
+\begin{equation}
+\lambda_1(\hat{x}, U) = \min_{v \in \mathbb{R}^n, v \neq 0} \frac{v^T K(\hat{x}) v}{-v^T G(U) v}
+\end{equation}
+
+where $v$ represents a non-zero virtual displacement field. Only positive BLFs, which indicate structural instability under the specific applied load direction, are considered. In computational practice, to prevent numerical singularities, the solver calculates the reciprocal eigenvalue $\mu_i = 1/\lambda_i$. Consequently, the problem can be formulated as:
+\begin{equation}
+(G(U) + \mu_i K(\hat{x}))\phi_i = 0
+\end{equation}
+
+In the paper presented by Ferrari, the maximum among closely spaced eigenvalues is typically approximated using a smooth Kreisselmeier-Steinhauser ($J^{KS}$) aggregation function to prevent non-differentiability during mode switching. However, the complex formulation of the aggregation function represents a significant computational challenge. To mitigate this, the present framework adopts a lighter approach by reformulating the multi-objective problem into a single objective via the weighted sum method. Instead of using a non-linear aggregation, the objectives (namely, structural compliance and the fundamental buckling load factor) are linearly combined. In its generalized form, given $M$ distinct objective functions $f_i(\hat{x})$, the aggregated global objective $\tilde{f}(\hat{x})$ is defined as [3]:
+\begin{equation}
+\tilde{f}(\hat{x}) = \sum_{i=1}^M w_i f_i(\hat{x})
+\end{equation}
+
+where $w_i \in [0, 1]$ represents the individual weighting parameter assigned to the $i$-th objective. While this approach assumes convexity of the Pareto front and does not inherently penalize mode switching, it reduces the computational cost associated with the sensitivity analysis. If all weights are positive, then the minimum of (23) is ''Pareto optimal'', meaning one cannot further improve one of the two objective functions without degrading the other. Normally, the relative value of the weights reflects the importance of the objective. In this specific framework, the relative importance of the two competing objectives is governed by a single weighting parameter $\alpha \in [0, 1]$:
+\begin{equation}
+F(\vec{x}) = \alpha \mu + (1 - \alpha)c
+\end{equation}
+\noindent where $\mu_1$ and $c$ represent the reciprocal eigenvalue and the structural compliance, respectively. Combining those two directly into a single scalar function is problematic, as their respective sensitivities often differ by several orders of magnitude. A direct weighted sum would cause the objective with the steepest local gradients to completely dominate the density update process, overshadowing the secondary objective.
+
+To ensure a balanced evolution of the Pareto-optimal frontier, in this paper we implement an adaptive dynamic sensitivity scaling. At each iteration $(i)$, the gradients of both objectives are normalized by their respective mean absolute values.
+
+Mathematically, the dynamic scaling factors $S_C^{(i)}$ and $S_\mu^{(i)}$ are defined as the scaled $L_1$ norms of the sensitivity vectors:
+\begin{equation}
+S_C^{(i)} = \frac{1}{m}\sum_{e=1}^m \left| \frac{\partial C^{(i)}}{\partial \hat{x}_e} \right|, \quad S_\mu^{(i)} = \frac{1}{m}\sum_{e=1}^m \left| \frac{\partial \mu_1^{(i)}}{\partial \hat{x}_e} \right|
+\end{equation}
+
+By dividing the raw gradients by these dynamically updated factors, the sensitivities are mapped to a comparable magnitude at every optimization step. The final aggregated sensitivity, which constitutes the search direction passed to the optimizer, is then computed as a linear combination governed by the parameter $\alpha \in [0, 1]$:
+\begin{equation}
+\frac{\partial F^{(i)}}{\partial \hat{x}_e} = (1 - \alpha)\frac{1}{S_C^{(i)}}\frac{\partial C^{(i)}}{\partial \hat{x}_e} + \alpha \frac{1}{S_\mu^{(i)}}\frac{\partial \mu_1^{(i)}}{\partial \hat{x}_e}
+\end{equation}
+
+This adaptive weighting scheme guarantees that both the stiffness maximization and the buckling resistance drive the material redistribution throughout the iterative process. As mentioned before, the importance of the two objectives is related to the weight $\alpha$: increasing it towards 1 will result in an optimization process prioritizing buckling resistance, and vice versa. This characteristic gives us the opportunity to investigate the behavior of the optimizer when prioritizing stiffness or buckling. For this reason, we implemented a dashboard inside the code interface, allowing the user to sweep between $\alpha = 0$ and $\alpha = 1$ with discrete steps of 0.1. Although this evaluation does not guarantee a full exploration of the continuous Pareto frontier, it is useful from an academic point of view to show how the structure changes when stiffness is penalized in favor of buckling, and vice versa. Later in this work, we will compare these results with those obtained by solving an equivalent problem using commercial TO software.
+
+\vspace{\baselineskip}
+To address the divergence of the objective functions' orders of magnitude over the iterations, it is necessary to implement a dynamic normalization scheme. Consequently, the normalization factors, represented by the scalar vector norms $||C^{(i)}||^*$ and $||\mu^{(i)}||^*$, are updated at every design iteration $i$.
+
+From a mathematical standpoint, scaling the formulation at every iteration implies that the objective function is modified at every step. However, this adaptive scaling does not compromise the convergence to the Pareto-optimal set since dividing by positive values (norms) is equivalent to reformulating the aggregated objective with positive weights. As established by Geoffrion [?], minimizing any linear combination of objectives governed by strictly positive coefficients mathematically guarantees convergence to a properly efficient (Pareto-optimal) solution.
+
+Therefore, the final formulation of the aggregated objective at the $i$-th iteration is expressed as:
+\begin{equation}
+\frac{\partial F^{(i)}}{\partial \hat{x}_e} = \frac{\alpha}{||\mu^{(i)}||^*} \frac{\partial \mu_1^{(i)}}{\partial \hat{x}_e} + \frac{(1 - \alpha)}{||C^{(i)}||^*} \frac{\partial C^{(i)}}{\partial \hat{x}_e}
+\end{equation}
+
+\section{Sensitivity Analysis}
+
+\noindent To evaluate the minimum of $\lambda$, and therefore the max of $\mu$, we calculate the following derivative[4]
+\begin{equation}
+\frac{\partial \mu_i}{\partial \hat{x}_e} = -\left[ \phi_i^T \frac{\partial G}{\partial \hat{x}_e} \phi_i + \mu_i \phi_i^T \frac{\partial K}{\partial \hat{x}_e} \phi_i - w_i^T \frac{\partial K}{\partial \hat{x}_e} U \right]
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\phi_i$: eigenvector / buckling mode shape.
+    \item $\mu_i$: inverse of the critical load factor.
+    \item $U$: displacement vector.
+    \item $w_i$: adjoint vector. It is a vector of virtual displacements, obtained by solving $w_i = K^{-1}[\phi_i^T (\nabla_U G)\phi_i]$, where $\nabla_U$ represents the gradient with respect to the displacements $U$.
+\end{itemize}
+\noindent As for the elemental matrices derivatives, we can write:
+\begin{equation}
+\frac{\partial K^e}{\partial \hat{x}_e} = \frac{\partial E_K(\hat{x}_e)}{\partial \hat{x}_e} K_0^e, \quad \frac{\partial G^e}{\partial \hat{x}_e} = \frac{\partial E_G(\hat{x}_e)}{\partial \hat{x}_e} G_0^e
+\end{equation}
+\noindent while the compliance derivative is evaluated as [7]:
+\begin{equation}
+\frac{\partial C}{\partial \hat{x}_e} = -U_e^T K_0^e U_e \frac{\partial E_K(\hat{x}_e)}{\partial \hat{x}_e}
+\end{equation}
+
+\section{Updating process}
+
+\noindent For the update at each iteration $i$, it was decided to use an OC (Optimality Criteria) method [2]. In particular, we have:
+\begin{equation}
+\frac{\partial \tilde{F}}{\partial \hat{x}_e} = \frac{1}{\hat{x}_e \sum_{i=1}^m h_{ei}} \sum_{i=1}^m h_{ei} \hat{x}_i \frac{\partial F}{\partial \hat{x}_i}
+\end{equation}
+
+For the update rule:
+\begin{equation}
+x_e^{new} = \begin{cases}
+\max(x_{min}, x_e - \zeta) & \text{if } x_e B_e^\eta \leq \max(x_{min}, x_e - \zeta) \\
+x_e B_e^\eta & \text{if } \max(x_{min}, x_e - \zeta) < x_e B_e^\eta < \min(1, x_e + \zeta) \\
+\min(1, x_e + \zeta) & \text{if } \min(1, x_e + \zeta) \leq x_e B_e^\eta
+\end{cases}
+\end{equation}
+\noindent where $\zeta$ is a parameter fixed at 0.2, which limits the change of $x_e$ in a single iteration. $x_{min}$ is fixed at 0.001 to avoid numerical instabilities. Finally, $B_e$ is defined as follows:
+\begin{equation}
+B_e = \frac{-\frac{\partial \tilde{F}}{\partial \hat{x}_e}}{\lambda_L}
+\end{equation}
+
+with $\eta = 1/2$. The derivative in the numerator is the gradient of the objective function, appropriately filtered, and $\lambda_L$ is the Lagrangian multiplier. It is worth noting that we use a regular grid of unit side, so in the denominator the volume derivative disappears and only $\lambda_L$ remains.
+
+The Lagrangian multiplier $\lambda_L$ is determined through the bisection method, so that the limit on the volume is satisfied:
+\begin{equation}
+\lambda_L = 0.5(l_2 + l_1); \quad l_2^{(0)} = 10^9, \quad l_1^{(0)} = 0
+\end{equation}
+\noindent The algorithm stops when $(l_2 - l_1)/(l_2 + l_1) < 10^{-4}$, and the update follows the classic bisection procedure.
+
+\section{Projection chain rule and continuation scheme}
+
+\noindent When the smoothed Heaviside projection (16) and the spatial density filter (17) are active, the sensitivities evaluated with respect to the physical densities $\hat{x}_e$ must be mapped back to the design variables $x_i$ via the chain rule. Differentiating (16) with respect to the intermediate filtered density $\tilde{x}_e$ yields:
+\begin{equation}
+\frac{\partial \hat{x}_e}{\partial \tilde{x}_e} = \frac{\beta \left(1 - \tanh^2(\beta(\tilde{x}_e - \eta))\right)}{\tanh(\beta\eta) + \tanh(\beta(1 - \eta))}
+\end{equation}
+Applying the discrete adjoint of the spatial filter (17), the filtered sensitivities of the objective and of the volume fraction with respect to $x_i$ become:
+\begin{equation}
+\frac{\partial \tilde{F}}{\partial x_i} = \sum_{e=1}^{m} \frac{h_{ei}}{\sum_{k=1}^{m} h_{ek}} \frac{\partial \hat{x}_e}{\partial \tilde{x}_e} \frac{\partial F}{\partial \hat{x}_e}, \quad \frac{\partial \tilde{f}}{\partial x_i} = \sum_{e=1}^{m} \frac{h_{ei}}{\sum_{k=1}^{m} h_{ek}} \frac{\partial \hat{x}_e}{\partial \tilde{x}_e}
+\end{equation}
+To avoid premature convergence to local minima, a step-wise continuation scheme is adopted for the projection parameter $\beta$. Starting from $\beta = 1$, its value is doubled every 20 iterations up to $\beta_{max} = 8$, and is held constant for at least the final 15 iterations before $i_{max}$ so that the optimizer can equilibrate at a fixed projection sharpness.
+
+At high values of $\beta$, the steep slope of the hyperbolic tangent amplifies small gradient variations by a factor proportional to $\beta$, which can trigger period-2 zig-zag oscillations in the OC update. To damp these limit cycles, the filtered sensitivity is averaged across consecutive iterations whenever $\beta$ remains constant:
+\begin{equation}
+\left(\frac{\partial \tilde{F}}{\partial x_e}\right)^{(i)}_{stab} = \gamma \left(\frac{\partial \tilde{F}}{\partial x_e}\right)^{(i)} + (1 - \gamma) \left(\frac{\partial \tilde{F}}{\partial x_e}\right)^{(i-1)}
+\end{equation}
+with $\gamma = 0.30$ (resetting the history whenever $\beta$ steps up). Simultaneously, the OC damping exponent $\eta$ and the move limit $\zeta$ in (32) are progressively tightened as $\beta$ increases ($\eta = 0.5$ for $\beta < 2$, $\eta = 0.3$ for $2 \leq \beta < 8$, $\eta = 0.25$ for $\beta = 8$; $\zeta = 0.20, 0.10, 0.05, 0.02$ for $\beta = 1, 2, 4, 8$, respectively).
+
+Furthermore, because a small fraction of grey boundary elements can continue to fluctuate at high $\beta$ even when the global objective has stabilized, an objective-based stopping criterion is evaluated once $\beta = \beta_{max}$ for at least $W = 10$ consecutive iterations:
+\begin{equation}
+\frac{\max_{k \in [i-W, i]} C^{(k)} - \min_{k \in [i-W, i]} C^{(k)}}{C^{(i)}} < \epsilon_C
+\end{equation}
+\begin{equation}
+\frac{\max_{k \in [i-W, i]} \lambda_1^{(k)} - \min_{k \in [i-W, i]} \lambda_1^{(k)}}{\lambda_1^{(i)}} < \epsilon_\lambda
+\end{equation}
+with $\epsilon_C = 10^{-3}$ and $\epsilon_\lambda = 5 \cdot 10^{-3}$. Measuring the full window excursion ($\max - \min$) rather than a single two-point difference prevents false convergence triggers on even/odd oscillation troughs.
+
+\section{Buckling and Pareto sweep stabilization}
+
+\noindent In accordance with (18) and (19), setting $p_K = p_G = 3$ with $E_{min} = 10^{-9}E_0$ implies that in low-density elements ($\hat{x}_e \sim 10^{-2}$, where $\hat{x}_e^3 \gg 10^{-9}$) the stiffness-to-stress ratio $E_G(\hat{x}_e)/E_K(\hat{x}_e)$ remains close to unity. Under these conditions, the eigenvalue solver can capture localized pseudo-buckling modes confined within the void regions. To suppress spurious void modes without altering the cubic penalization in solid bars ($\hat{x}_e \rightarrow 1$), a smooth rational cutoff function $\psi(\hat{x}_e)$ is introduced in the geometric stiffness interpolation:
+\begin{equation}
+\psi(\hat{x}_e) = \frac{\hat{x}_e^3}{\hat{x}_e^3 + x_0^3}, \quad E_G(\hat{x}_e) = E_0 \hat{x}_e^3 \psi(\hat{x}_e)
+\end{equation}
+where $x_0 = 0.10$ is the void cutoff threshold. For $\hat{x}_e \ll x_0$, $E_G(\hat{x}_e) \propto \hat{x}_e^6$, decoupling low-density elements from the stability spectrum. The exact analytical derivative used in (29) becomes:
+\begin{equation}
+\frac{\partial E_G(\hat{x}_e)}{\partial \hat{x}_e} = 3 E_0 \hat{x}_e^2 \psi(\hat{x}_e)\left(2 - \psi(\hat{x}_e)\right)
+\end{equation}
+
+Moreover, as buckling-reinforced members evolve, the first $n_{Eig}$ eigenvalues frequently coalesce, causing abrupt mode switching if only $\mu_1$ is differentiated. In the implemented solver, the first $n_{Eig} = 6$ modes $\mu_m = 1/\lambda_m$ (normalized such that $\phi_m^T K \phi_m = 1$) are computed by passing the sparse LU factorization of $[K]$ as a linear inverse operator to ARPACK, scaled by $E_0 t$ to ensure exact scale invariance with respect to Young's modulus and thickness. The modal gradients (28) are then combined via Kreisselmeier-Steinhauser ($KS$) weights:
+\begin{equation}
+w_m^{KS} = \frac{\exp\left(\rho_{KS}(\mu_m - \mu_1)\right)}{\sum_{k=1}^{n_{Eig}} \exp\left(\rho_{KS}(\mu_k - \mu_1)\right)}, \quad \frac{\partial \mu_{KS}}{\partial \hat{x}_e} = \sum_{m=1}^{n_{Eig}} w_m^{KS} \frac{\partial \mu_m}{\partial \hat{x}_e}
+\end{equation}
+with aggregation parameter $\rho_{KS} = 20$.
+
+In tensile members and near the loaded node, $\frac{\partial \mu_{KS}}{\partial \hat{x}_e}$ can assume positive values. When $\alpha \rightarrow 1$ in (27), an unclamped positive buckling gradient makes $\frac{\partial F^{(i)}}{\partial \hat{x}_e} \geq 0$, forcing $B_e = 0$ in (33) and eroding the primary tension chord. To preserve the tensile load path, positive buckling sensitivities are clamped to zero prior to aggregation:
+\begin{equation}
+\bar{g}_{\mu, e}^{(i)} = \min\left(0, \frac{\partial \mu_{KS}^{(i)}}{\partial \hat{x}_e}\right)
+\end{equation}
+At the same time, the normalization norms $||C^{(i)}||^*$ and $||\mu^{(i)}||^*$ in (27) are evaluated via the 95-th percentile ($P_{95}$) of the absolute gradients to avoid bias from localized stress singularities at the point load, and the user weight $\alpha \in [0, 1]$ is mapped to an effective weight $\alpha_{eff}^{(i)}$ ramped over the first $N_{ramp} = 15$ iterations:
+\begin{equation}
+\alpha_{eff}^{(i)} = 0.65\,\alpha \min\left(1, \frac{i}{N_{ramp}}\right)
+\end{equation}
+retaining a minimum $35\%$ compliance contribution so that global stiffness connectivity is never lost at the upper end of the Pareto sweep.
+
+\section{Stress recovery and post-processing}
+
+\noindent Once the optimization has converged, the local plane-stress tensor is reconstructed at the centroid of each element from the final nodal displacement vector $u_e$:
+\begin{equation}
+\sigma_e = \begin{bmatrix} \sigma_x \\ \sigma_y \\ \tau_{xy} \end{bmatrix} = E_0 [C_0] [B_0] u_e
+\end{equation}
+From the Cartesian components, the in-plane principal stresses $\sigma_{I, II}$ and the signed dominant principal stress $\sigma_{signed}$ are evaluated as:
+\begin{equation}
+\sigma_{I, II} = \frac{\sigma_x + \sigma_y}{2} \pm \sqrt{\left(\frac{\sigma_x - \sigma_y}{2}\right)^2 + \tau_{xy}^2}, \quad \sigma_{signed} = \begin{cases} \sigma_I & \text{if } |\sigma_I| > |\sigma_{II}| \\ \sigma_{II} & \text{otherwise} \end{cases}
+\end{equation}
+In the post-processing interface, elements below the solid density threshold ($\hat{x}_e < 0.40$) are masked out, allowing a direct visual identification of tensile chords ($\sigma_{signed} > 0$) and compressed struts ($\sigma_{signed} < 0$) across the Pareto frontier.
+
+\begin{thebibliography}{10}
+
+\bibitem{1} Ferrari, F., \& Sigmund, O. (2020). \textit{Revisiting topology optimization with buckling constraints.} Structural and Multidisciplinary Optimization, 61(4), 1401-1415.
+
+\bibitem{2} Sigmund, O. (2001). \textit{A 99 line topology optimization code written in Matlab.} Structural and multidisciplinary optimization, 21(2), 120-127.
+
+\bibitem{3} Marler, R. T., \& Arora, J. S. (2004). \textit{Survey of multi-objective optimization methods for engineering.} Structural and multidisciplinary optimization, 26(6), 369-395.
+
+\bibitem{4} Sigmund, O. (1997). \textit{On the design of compliant mechanisms using topology optimization.} Mechanics of structures and machines, 25(4), 493-524.
+
+\bibitem{5} Neves, M. M., Rodrigues, H., \& Guedes, J. M. (1995). \textit{Generalized topology design of structures with a buckling load criterion.} Structural Optimization, 10(2), 71-78.
+
+\bibitem{6} Bends\o e, M. P., \& Sigmund, O. (2003). \textit{Topology optimization: theory, methods, and applications.} Springer Science \& Business Media.
+
+\bibitem{7} F. Ferrari, O. Sigmund, and J. K. Guest, ``Topology optimization with linearized buckling criteria in 250 lines of Matlab,'' \textit{Structural and Multidisciplinary Optimization}, vol. 63, pp. 3045--3066, 2021. DOI: 10.1007/s00158-021-02854-x.
+
+\bibitem{8} F. Wang, B. Lazarov, and O. Sigmund, ``On projection methods, convergence and robust formulations in topology optimization,'' \textit{Structural and Multidisciplinary Optimization}, vol. 43, no. 6, pp. 767--784, 2011.
+
+\bibitem{9} I. Das and J. E. Dennis, ``A closer look at drawbacks of minimizing weighted sums of objectives for Pareto set generation in multicriteria optimization problems,'' \textit{Structural Optimization}, vol. 14, no. 1, pp. 63--69, 1997.
+
+\bibitem{10} A. Messac, A. Ismail-Yahaya, and C. A. Mattson, ``The normalized normal constraint method for generating the Pareto frontier,'' \textit{Structural and Multidisciplinary Optimization}, vol. 25, no. 2, pp. 86--98, 2003.
+
+\end{thebibliography}
+
+\end{document}
