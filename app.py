@@ -274,22 +274,22 @@ if simp_res is not None and simp_res.success and optimizer is not None:
             unsafe_allow_html=True
         )
 
-        col_p_btn, col_p_style, col_p_thresh, col_p_smooth = st.columns([1.5, 1.5, 1.2, 1])
+        col_p_btn, col_p_style, col_p_smooth = st.columns([1.5, 1.5, 1])
         with col_p_btn:
             st.markdown("<br>", unsafe_allow_html=True)
             run_sweep = st.button("Generate Pareto alpha sweep")
         with col_p_style:
             p_view_style = st.selectbox(
                 "Sweep view style:",
-                options=["silhouette_bw", "stress_masked", "density"],
-                format_func=lambda x: "Solid silhouette (B&W)" if x == "silhouette_bw" else ("Stress heatmap" if x == "stress_masked" else "Density heatmap"),
+                options=["silhouette_bw", "stress_masked"],
+                format_func=lambda x: "Solid silhouette (B&W)" if x == "silhouette_bw" else "Stress heatmap",
                 key="pareto_view_style_select"
             )
-        with col_p_thresh:
-            p_thresh = st.slider("Density threshold", min_value=0.10, max_value=0.85, value=0.40, step=0.02, key="pareto_dens_thresh")
         with col_p_smooth:
             st.markdown("<br>", unsafe_allow_html=True)
             p_smooth = st.checkbox("Smooth visualization", value=True, key="pareto_smooth_checkbox")
+
+        p_thresh = 0.40
 
         def make_pareto_card(opt_obj, res_obj, alpha_val):
             f_p = opt_obj.to_scientific_figures(
@@ -307,12 +307,6 @@ if simp_res is not None and simp_res.success and optimizer is not None:
                 f_p.update_traces(
                     selector=dict(type="heatmap"),
                     colorbar=dict(title=dict(text="σ [MPa]", font=dict(size=9)), tickfont=dict(size=9), len=0.85)
-                )
-                f_p.update_layout(height=260, margin=dict(l=15, r=35, t=15, b=15))
-            elif p_view_style == "density":
-                f_p.update_traces(
-                    selector=dict(type="heatmap"),
-                    colorbar=dict(title=dict(text="ρ", font=dict(size=9)), tickfont=dict(size=9), len=0.85)
                 )
                 f_p.update_layout(height=260, margin=dict(l=15, r=35, t=15, b=15))
             else:
