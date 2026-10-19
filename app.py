@@ -167,51 +167,171 @@ simp_key = (
 
 
 
-if st.button("Run topology optimization", type="primary"):
-    with st.container():
-        try:
-            progress_bar = st.progress(0)
-            progress_text = st.empty()
-            
-            def update_progress(it, max_it):
-                pct = int((it / max_it) * 100)
-                progress_bar.progress(it / max_it)
-                progress_text.info(f"🚀 Executing SIMP optimization... Iteration {it}/{max_it} — {pct}% complete...")
-            optimizer = SIMPOptimizer2D(
-                nelx=int(nelx_in), nely=int(nely_in), dx=float(dx_in), dy=float(dy_in),
-                thickness=float(thickness_in), E0=float(E0_in), nu=float(nu_in),
-                penal=float(penal_in), rmin=float(rmin_in), volfrac=float(volfrac_in)
+# -----------------------------------------------------------------------------
+# Background Job Execution Registry
+# -----------------------------------------------------------------------------
+@st.cache_resource
+def get_background_jobs():
+    return {}
+
+def _run_single_worker(job_id, params):
+    registry = get_background_jobs()
+    job = registry.get(job_id)
+    if not job:
+        return
+    try:
+        optimizer = SIMPOptimizer2D(
+            nelx=params["nelx"], nely=params["nely"], dx=params["dx"], dy=params["dy"],
+            thickness=params["thickness"], E0=params["E0"], nu=params["nu"],
+            penal=params["penal"], rmin=params["rmin"], volfrac=params["volfrac"]
+        )
+        bc_type = params["bc_type"]
+        nelx_val = params["nelx"]
+        nely_val = params["nely"]
+
+        if bc_type == "Full left wall fixation (x = 0)":
+            optimizer.fix_wall("left", fix_x=True, fix_y=True)
+        elif bc_type == "Two bottom supports (x=0 and x=L)":
+            optimizer.fix_node(0, 0, fix_x=True, fix_y=True)
+            optimizer.fix_node(nelx_val, 0, fix_x=False, fix_y=True)
+        elif bc_type == "Partial left wall fixation":
+            mid_y = nely_val // 2
+            for jy in range(max(0, mid_y - 2), min(nely_val + 1, mid_y + 3)):
+                optimizer.fix_node(0, jy, fix_x=True, fix_y=True)
+        elif bc_type == "Custom nodes":
+            for sx, sy in params["sup_nodes"]:
+                optimizer.fix_node(sx, sy, fix_x=True, fix_y=True)
+
+        for lx, ly, fx, fy in params["loads_simp"]:
+            optimizer.add_load(lx, ly, fx=fx, fy=fy)
+
+        def cb(it, max_it):
+            pct = int((it / max_it) * 100)
+            job["progress"] = it / max_it
+            job["iteration"] = it
+            job["message"] = f"Executing SIMP optimization... Iteration {it}/{max_it} — {pct}% complete..."
+
+        simp_res = optimizer.solve(
+            max_iter=params["max_iter"],
+            tol=0.01,
+            mode="buckling_max",
+            alpha_buckling=params["alpha"],
+            nEig=params["nEig"],
+            progress_callback=cb
+        )
+        job["optimizer"] = optimizer
+        job["result"] = simp_res
+        job["status"] = "completed"
+        job["progress"] = 1.0
+        job["message"] = "Optimization completed successfully."
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        job["message"] = f"Error during SIMP resolution: {str(e)}"
+
+def _run_sweep_worker(job_id, params):
+    registry = get_background_jobs()
+    job = registry.get(job_id)
+    if not job:
+        return
+    alphas = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    pareto_data = []
+    try:
+        for i, a in enumerate(alphas):
+            pct = int(((i + 1) / len(alphas)) * 100)
+            job["progress"] = i / len(alphas)
+            job["message"] = f"Computing alpha = {a:.1f} ({i+1}/{len(alphas)}) — {pct}%..."
+
+            opt_clone = SIMPOptimizer2D(
+                nelx=params["nelx"], nely=params["nely"], dx=params["dx"], dy=params["dy"],
+                thickness=params["thickness"], E0=params["E0"], nu=params["nu"],
+                penal=params["penal"], rmin=params["rmin"], volfrac=params["volfrac"]
             )
+            bc_type = params["bc_type"]
+            nelx_val = params["nelx"]
+            nely_val = params["nely"]
 
-            # Apply boundary conditions
             if bc_type == "Full left wall fixation (x = 0)":
-                optimizer.fix_wall("left", fix_x=True, fix_y=True)
+                opt_clone.fix_wall("left", fix_x=True, fix_y=True)
             elif bc_type == "Two bottom supports (x=0 and x=L)":
-                optimizer.fix_node(0, 0, fix_x=True, fix_y=True)
-                optimizer.fix_node(int(nelx_in), 0, fix_x=False, fix_y=True)
+                opt_clone.fix_node(0, 0, fix_x=True, fix_y=True)
+                opt_clone.fix_node(nelx_val, 0, fix_x=False, fix_y=True)
             elif bc_type == "Partial left wall fixation":
-                mid_y = int(nely_in) // 2
-                for jy in range(max(0, mid_y - 2), min(int(nely_in) + 1, mid_y + 3)):
-                    optimizer.fix_node(0, jy, fix_x=True, fix_y=True)
+                mid_y = nely_val // 2
+                for jy in range(max(0, mid_y - 2), min(nely_val + 1, mid_y + 3)):
+                    opt_clone.fix_node(0, jy, fix_x=True, fix_y=True)
             elif bc_type == "Custom nodes":
-                for sx, sy in sup_nodes:
-                    optimizer.fix_node(sx, sy, fix_x=True, fix_y=True)
+                for sx, sy in params["sup_nodes"]:
+                    opt_clone.fix_node(sx, sy, fix_x=True, fix_y=True)
 
-            for lx, ly, fx, fy in loads_simp:
-                optimizer.add_load(lx, ly, fx=fx, fy=fy)
+            for lx, ly, fx, fy in params["loads_simp"]:
+                opt_clone.add_load(lx, ly, fx=fx, fy=fy)
 
-            simp_res = optimizer.solve(max_iter=int(max_iter_in), tol=0.01, mode="buckling_max", alpha_buckling=float(alpha_in), nEig=int(nEig_in), progress_callback=update_progress)
-            progress_text.empty()
-            progress_bar.empty()
+            res_alpha = opt_clone.solve(
+                max_iter=params["max_iter"], tol=0.01,
+                mode="buckling_max", alpha_buckling=a, nEig=params["nEig"]
+            )
+            if res_alpha.success:
+                pareto_data.append((a, opt_clone, res_alpha))
+                job["sweep_results"] = list(pareto_data)
+            job["progress"] = (i + 1) / len(alphas)
 
-            if st.session_state.get("simp_key") != simp_key:
-                st.session_state["pareto_results"] = None
-            st.session_state.simp_key = simp_key
-            st.session_state.simp_optimizer = optimizer
-            st.session_state.simp_result = simp_res
-        except Exception as ex:
-            st.error(f"Error during SIMP resolution: {str(ex)}")
-            st.session_state.simp_result = None
+        job["status"] = "completed"
+        job["progress"] = 1.0
+        job["message"] = "Sweep completed successfully."
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        job["message"] = f"Error during sweep: {str(e)}"
+
+# Screen wake lock script for background execution support
+st.components.v1.html("""
+<script>
+    if ('wakeLock' in navigator) {
+        navigator.wakeLock.request('screen').catch((err) => {});
+    }
+</script>
+""", height=0)
+
+single_job_id = f"single_{hash(simp_key)}"
+jobs = get_background_jobs()
+
+if st.button("Run topology optimization", type="primary"):
+    if single_job_id not in jobs or jobs[single_job_id]["status"] != "running":
+        jobs[single_job_id] = {
+            "status": "running",
+            "progress": 0.0,
+            "message": "Starting background optimization...",
+            "optimizer": None,
+            "result": None,
+            "error": None
+        }
+        params = {
+            "nelx": int(nelx_in), "nely": int(nely_in), "dx": float(dx_in), "dy": float(dy_in),
+            "thickness": float(thickness_in), "E0": float(E0_in), "nu": float(nu_in),
+            "penal": float(penal_in), "rmin": float(rmin_in), "volfrac": float(volfrac_in),
+            "bc_type": bc_type, "sup_nodes": sup_nodes, "loads_simp": loads_simp,
+            "max_iter": int(max_iter_in), "alpha": float(alpha_in), "nEig": int(nEig_in)
+        }
+        t = threading.Thread(target=_run_single_worker, args=(single_job_id, params), daemon=True)
+        t.start()
+        st.session_state["active_single_job"] = single_job_id
+        st.rerun()
+
+current_single_id = st.session_state.get("active_single_job")
+if current_single_id and current_single_id in jobs:
+    cjob = jobs[current_single_id]
+    if cjob["status"] == "running":
+        st.info(f"🚀 {cjob['message']}")
+        st.progress(cjob["progress"])
+        time.sleep(0.5)
+        st.rerun()
+    elif cjob["status"] == "completed":
+        st.session_state.simp_optimizer = cjob["optimizer"]
+        st.session_state.simp_result = cjob["result"]
+        st.session_state.simp_key = simp_key
+    elif cjob["status"] == "error":
+        st.error(f"Error during SIMP resolution: {cjob['error']}")
 
 simp_res = st.session_state.get("simp_result", None)
 optimizer = st.session_state.get("simp_optimizer", None)
@@ -313,66 +433,51 @@ if simp_res is not None and simp_res.success and optimizer is not None:
                 f_p.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10))
             return f_p
 
+        sweep_job_id = f"sweep_{hash(simp_key)}"
         if run_sweep:
-            alphas = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-            progress_text = st.empty()
-            progress_bar = st.progress(0)
-            
-            # Create placeholders progressively
-            cols = st.columns(3)
-            placeholders = [cols[i % 3].empty() for i in range(len(alphas))]
-            
-            pareto_data = []
-            
-            for i, a in enumerate(alphas):
-                pct = int(((i + 1) / len(alphas)) * 100)
-                progress_text.info(f"⏳ Computing alpha = {a:.1f} ({i+1}/{len(alphas)}) — {pct}%...")
-                
-                # Create a clone of the optimizer for the run
-                opt_clone = SIMPOptimizer2D(
-                    nelx=int(nelx_in), nely=int(nely_in), dx=float(dx_in), dy=float(dy_in),
-                    thickness=float(thickness_in), E0=float(E0_in), nu=float(nu_in),
-                    penal=float(penal_in), rmin=float(rmin_in), volfrac=float(volfrac_in)
-                )
-                # Re-apply BCs
-                if bc_type == "Full left wall fixation (x = 0)":
-                    opt_clone.fix_wall("left", fix_x=True, fix_y=True)
-                elif bc_type == "Two bottom supports (x=0 and x=L)":
-                    opt_clone.fix_node(0, 0, fix_x=True, fix_y=True)
-                    opt_clone.fix_node(int(nelx_in), 0, fix_x=False, fix_y=True)
-                elif bc_type == "Partial left wall fixation":
-                    mid_y = int(nely_in) // 2
-                    for jy in range(max(0, mid_y - 2), min(int(nely_in) + 1, mid_y + 3)):
-                        opt_clone.fix_node(0, jy, fix_x=True, fix_y=True)
-                elif bc_type == "Custom nodes":
-                    for sx, sy in sup_nodes:
-                        opt_clone.fix_node(sx, sy, fix_x=True, fix_y=True)
+            if sweep_job_id not in jobs or jobs[sweep_job_id]["status"] != "running":
+                jobs[sweep_job_id] = {
+                    "status": "running",
+                    "progress": 0.0,
+                    "message": "Starting background sweep...",
+                    "sweep_results": [],
+                    "error": None
+                }
+                params = {
+                    "nelx": int(nelx_in), "nely": int(nely_in), "dx": float(dx_in), "dy": float(dy_in),
+                    "thickness": float(thickness_in), "E0": float(E0_in), "nu": float(nu_in),
+                    "penal": float(penal_in), "rmin": float(rmin_in), "volfrac": float(volfrac_in),
+                    "bc_type": bc_type, "sup_nodes": sup_nodes, "loads_simp": loads_simp,
+                    "max_iter": int(max_iter_in), "nEig": int(nEig_in)
+                }
+                t = threading.Thread(target=_run_sweep_worker, args=(sweep_job_id, params), daemon=True)
+                t.start()
+                st.session_state["active_sweep_job"] = sweep_job_id
+                st.rerun(scope="fragment")
 
-                for lx, ly, fx, fy in loads_simp:
-                    opt_clone.add_load(lx, ly, fx=fx, fy=fy)
+        current_sweep_id = st.session_state.get("active_sweep_job")
+        if current_sweep_id and current_sweep_id in jobs:
+            sjob = jobs[current_sweep_id]
+            if sjob["status"] == "running":
+                st.info(f"⏳ {sjob['message']}")
+                st.progress(sjob["progress"])
+                if sjob["sweep_results"]:
+                    cols = st.columns(3)
+                    for i, (a, opt_clone, res_alpha) in enumerate(sjob["sweep_results"]):
+                        with cols[i % 3].container():
+                            st.markdown(f"**α = {a:.1f}**")
+                            st.caption(f"C: {res_alpha.compliance:.1f} N·mm | BLF: {res_alpha.blf_history[-1] if res_alpha.blf_history else 'N/A':.3f}")
+                            f_plot = make_pareto_card(opt_clone, res_alpha, a)
+                            st.plotly_chart(f_plot, use_container_width=True)
+                time.sleep(1.0)
+                st.rerun(scope="fragment")
+            elif sjob["status"] == "completed":
+                st.session_state["pareto_results"] = sjob["sweep_results"]
+                st.session_state["pareto_key"] = simp_key
+            elif sjob["status"] == "error":
+                st.error(f"Error during sweep: {sjob['error']}")
 
-                res_alpha = opt_clone.solve(
-                    max_iter=int(max_iter_in), tol=0.01,
-                    mode="buckling_max", alpha_buckling=a, nEig=int(nEig_in)
-                )
-                
-                if res_alpha.success:
-                    pareto_data.append((a, opt_clone, res_alpha))
-                    with placeholders[i].container():
-                        st.markdown(f"**α = {a:.1f}**")
-                        st.caption(f"C: {res_alpha.compliance:.1f} N·mm | BLF: {res_alpha.blf_history[-1] if res_alpha.blf_history else 'N/A':.3f}")
-                        f_plot = make_pareto_card(opt_clone, res_alpha, a)
-                        st.plotly_chart(f_plot, use_container_width=True)
-                
-                progress_bar.progress((i + 1) / len(alphas))
-                
-            progress_text.empty()
-            progress_bar.empty()
-            st.session_state["pareto_results"] = pareto_data
-            st.session_state["pareto_key"] = simp_key
-            st.rerun(scope="fragment")
-
-        elif "pareto_results" in st.session_state and st.session_state["pareto_results"]:
+        if st.session_state.get("pareto_results") and (not current_sweep_id or jobs.get(current_sweep_id, {}).get("status") != "running"):
             pareto_data = st.session_state["pareto_results"]
             cols = st.columns(3)
             for i, (a, opt_clone, res_alpha) in enumerate(pareto_data):
@@ -381,5 +486,6 @@ if simp_res is not None and simp_res.success and optimizer is not None:
                     st.caption(f"C: {res_alpha.compliance:.1f} N·mm | BLF: {res_alpha.blf_history[-1] if res_alpha.blf_history else 'N/A':.3f}")
                     f_plot = make_pareto_card(opt_clone, res_alpha, a)
                     st.plotly_chart(f_plot, use_container_width=True)
-            
+
     render_pareto_section()
+
