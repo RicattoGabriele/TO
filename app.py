@@ -265,19 +265,19 @@ if simp_res is not None and simp_res.success and optimizer is not None:
     
     @st.fragment
     def render_pareto_section():
-        st.markdown("#### Pareto frontier sweep")
+        st.markdown("#### Trade-off exploration sweep")
         st.markdown(
-            "This procedure generates the Pareto frontier a posteriori. "
-            "The **α** parameter mathematically balances bending stiffness (compliance) and structural stability (buckling).<br>"
-            "- **α near 0**: designed exclusively for maximum stiffness (thinner members, higher buckling risk).<br>"
-            "- **α near 1**: designed to delay buckling as much as possible (thicker, aligned members, at the expense of global compliance).",
+            "This procedure explores the trade-off spectrum across competing objectives. "
+            "The **α** parameter balances bending stiffness (compliance) and structural stability (buckling).<br>"
+            "- **α near 0**: designed primarily for maximum stiffness (thinner members, higher buckling risk).<br>"
+            "- **α near 1**: designed to prioritize buckling resistance (thicker, aligned members, retaining baseline stiffness).",
             unsafe_allow_html=True
         )
 
         col_p_btn, col_p_style, col_p_smooth = st.columns([1.5, 1.5, 1])
         with col_p_btn:
             st.markdown("<br>", unsafe_allow_html=True)
-            run_sweep = st.button("Generate Pareto alpha sweep")
+            run_sweep = st.button("Generate trade-off alpha sweep")
         with col_p_style:
             p_view_style = st.selectbox(
                 "Sweep view style:",
