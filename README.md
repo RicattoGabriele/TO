@@ -1,6 +1,6 @@
 # 2D topology optimization with linearized buckling analysis
 
-2D continuum topology optimization solver based on the three-field SIMP method (design variables -> spatial filter -> Heaviside projection), coupled with linearized buckling analysis (LBA), Kreisselmeier-Steinhauser (KS) multi-modal aggregation, and Pareto multi-objective scalarization. Includes an interactive Streamlit dashboard and a discrete ground structure truss solver.
+2D continuum topology optimization solver based on the SIMP method, with linearized buckling analysis and Kreisselmeier-Steinhauser multi-modal aggregation. Includes an interactive Streamlit dashboard.
 
 ## Implemented features
 
@@ -11,31 +11,31 @@
   - Cone density filter ($\tilde{x} = Hx / H_s$) followed by a smoothed Heaviside projection ($x_{\text{Phys}}$) with automatic $\beta$-continuation.
   - Full chain rule applied to both objective sensitivities ($\partial f / \partial x_e$) and volume sensitivities ($\partial V / \partial x_e$).
   - Optimality criteria (OC) bisection loop evaluating the true projected physical volume at every sub-iteration, with support for passive solid and void regions.
-- Linearized buckling analysis (LBA) and KS aggregation:
+- LBA and KS aggregation:
   - Geometric stiffness matrix $K_G(x_{\text{Phys}}, u)$ assembled from the non-linear Green-Lagrange strain tensor ($u_{,x}^2 + v_{,x}^2$) using pre-computed centroidal matrices ($T_x, T_y, T_{xy}$).
   - Differential penalization ($p_G = 6 > p_K = 3$ and zero geometric stiffness in void regions) to suppress spurious buckling modes in low-density elements.
   - Option to optimize either the fundamental mode ($n_{\text{eig}} = 1$) or the Kreisselmeier-Steinhauser (KS) multi-modal aggregate ($n_{\text{eig}} > 1$) to avoid mode switching when eigenvalues coalesce.
-- Pareto trade-off and post-processing (`app.py`):
+- Buckling-compliance trade-off and post-processing (`app.py`):
   - Continuous weighting $\alpha$ between compliance ($C$) and critical buckling load factor ($\text{BLF} = \lambda_1$) using dynamic $L_1$ gradient normalization.
-  - Automated Pareto frontier sweep across $\alpha \in [0, 1]$.
+  - Sweeping $\alpha \in [0, 1]$.
   - Dual-view visualization: black-and-white structural layout alongside a void-masked minimum principal stress ($\sigma_{II}$) map (`Jet_r` colormap: red for compression, blue for tension).
 
 ## Man-in-the-loop development workflow
 
-This repository was developed with a strict human-in-the-loop approach: mathematical formulation, literature selection, and physical validation are handled by the engineer, while the AI agent is used strictly for code translation, vectorization, and UI wiring.
+This repository was developed with a human-in-the-loop approach: mathematical formulation, literature selection, and physical validation are handled by the engineer, while the AI agent is used strictly for code translation, vectorization, and UI wiring.
 
 ```text
 [1. Theoretical formulation (human)]
-   Literature review (Sigmund, Ferrari, Wang, Marler & Arora)
-   Analytical derivation of FEM, LBA, adjoint sensitivities, and Heaviside chain rule
+   Literature review
+   Analytical derivation of FEM, LBA, etc...
         |
         v
 [2. Engineering specification (human)]
-   Definition of matrix equations, boundary conditions, and algorithmic structure (OC / KS / Pareto)
+   Definition of matrix equations, boundary conditions, and algorithmic structure
         |
         v
-[3. Code implementation & vectorization (AI)]
-   Translation into vectorized NumPy/SciPy routines, sparse LU caching, and Streamlit UI
+[3. Code implementation & vectorization (Agents)]
+   Translation into vectorized NumPy/SciPy routines and Streamlit UI
         |
         v
 [4. Physical validation & code review (human)]
