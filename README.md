@@ -1,6 +1,6 @@
 # 2D topology optimization with linearized buckling analysis
 
-2D continuum topology optimization solver based on the SIMP method, with linearized buckling analysis and Kreisselmeier-Steinhauser multi-modal aggregation. Includes an interactive Streamlit dashboard.
+2D continuum topology optimization solver based on the three-field SIMP method (design variables -> spatial filter -> Heaviside projection), coupled with linearized buckling analysis (LBA), Kreisselmeier-Steinhauser (KS) multi-modal aggregation, and Pareto multi-objective scalarization. Includes an interactive Streamlit dashboard and a discrete ground structure truss solver.
 
 ## Implemented features
 
@@ -11,31 +11,31 @@
   - Cone density filter ($\tilde{x} = Hx / H_s$) followed by a smoothed Heaviside projection ($x_{\text{Phys}}$) with automatic $\beta$-continuation.
   - Full chain rule applied to both objective sensitivities ($\partial f / \partial x_e$) and volume sensitivities ($\partial V / \partial x_e$).
   - Optimality criteria (OC) bisection loop evaluating the true projected physical volume at every sub-iteration, with support for passive solid and void regions.
-- LBA and KS aggregation:
+- Linearized buckling analysis (LBA) and KS aggregation:
   - Geometric stiffness matrix $K_G(x_{\text{Phys}}, u)$ assembled from the non-linear Green-Lagrange strain tensor ($u_{,x}^2 + v_{,x}^2$) using pre-computed centroidal matrices ($T_x, T_y, T_{xy}$).
   - Differential penalization ($p_G = 6 > p_K = 3$ and zero geometric stiffness in void regions) to suppress spurious buckling modes in low-density elements.
   - Option to optimize either the fundamental mode ($n_{\text{eig}} = 1$) or the Kreisselmeier-Steinhauser (KS) multi-modal aggregate ($n_{\text{eig}} > 1$) to avoid mode switching when eigenvalues coalesce.
-- Buckling-compliance trade-off and post-processing (`app.py`):
+- Pareto trade-off and post-processing (`app.py`):
   - Continuous weighting $\alpha$ between compliance ($C$) and critical buckling load factor ($\text{BLF} = \lambda_1$) using dynamic $L_1$ gradient normalization.
-  - Sweeping $\alpha \in [0, 1]$.
+  - Automated Pareto frontier sweep across $\alpha \in [0, 1]$.
   - Dual-view visualization: black-and-white structural layout alongside a void-masked minimum principal stress ($\sigma_{II}$) map (`Jet_r` colormap: red for compression, blue for tension).
 
 ## Man-in-the-loop development workflow
 
-This repository was developed with a human-in-the-loop approach: mathematical formulation, literature selection, and physical validation are handled by the engineer, while the AI agent is used strictly for code translation, vectorization, and UI wiring.
+This repository was developed with a strict human-in-the-loop approach: mathematical formulation, literature selection, and physical validation are handled by the engineer, while the AI agent is used strictly for code translation, vectorization, and UI wiring.
 
 ```text
 [1. Theoretical formulation (human)]
-   Literature review
-   Analytical derivation of FEM, LBA, etc...
+   Literature review (Sigmund, Ferrari, Wang, Marler & Arora)
+   Analytical derivation of FEM, LBA, adjoint sensitivities, and Heaviside chain rule
         |
         v
 [2. Engineering specification (human)]
-   Definition of matrix equations, boundary conditions, and algorithmic structure
+   Definition of matrix equations, boundary conditions, and algorithmic structure (OC / KS / Pareto)
         |
         v
-[3. Code implementation & vectorization (Agents)]
-   Translation into vectorized NumPy/SciPy routines and Streamlit UI
+[3. Code implementation & vectorization (AI)]
+   Translation into vectorized NumPy/SciPy routines, sparse LU caching, and Streamlit UI
         |
         v
 [4. Physical validation & code review (human)]
@@ -58,6 +58,17 @@ Cross-checking the solver against external references (Altair Inspire on an Alum
   1. *Frozen-settings regression*: $200 \times 100$ cantilever ($E_0 = 68900\,\text{MPa}, t = 5\,\text{mm}, 45$ iterations, legacy $\beta$) reproduces $C = 392.0\,\text{N}\cdot\text{mm}$ ($30\,\text{mm}$ strip load, $\nu = 0.33$) and $C = 418.01\,\text{N}\cdot\text{mm}$ (point load, $\nu = 0.30$).
   2. *Scale invariance*: $(E_0 = 1, t = 10)$ vs $(E_0 = 68900, t = 5)$ yields identical $C \cdot E_0 \cdot t$, identical $\text{BLF} / (E_0 \cdot t)$, and identical topology `density_matrix`.
   3. *Full solid vs Timoshenko beam*: Full-solid Q4 FEM cantilever matches analytical Timoshenko compliance ($C_{\text{Timoshenko}} = \frac{F^2 L^3}{3 E_0 I} + \frac{6 F^2 L}{5 G A} = 111.42\,\text{N}\cdot\text{mm}$) within $0.6\%$.
+
+## Results
+
+![Comparison with Altair Inspire](docs/figures/validation_inspire.png)
+*Fig. 1: Compliance-only topology, 400×200 mm domain, fixed left edge, F = 1000 N, V_f = 25%: in-house solver, point load (left) vs. Altair Inspire/OptiStruct, 1 mm² face load (right). Raw thresholded densities, no smoothing.*
+
+![α sweep](docs/figures/alpha_sweep.png)
+*Fig. 2: Designs for α = 0, 0.3 and 1.0, with compliance C and in-plane BLF. α = 0 is compliance-only; α = 1 is not buckling-only (effective weight capped at 0.65).*
+
+![C–BLF trade-off](docs/figures/c_blf_tradeoff.png)
+*Fig. 3: C–BLF values for the 11 sweep points; the hollow marker (α = 0.8) is dominated by α = 0.7.*
 
 ## Repository structure
 

@@ -1,0 +1,323 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath, amssymb}
+
+\title{Multi-agentic implementation of a 2D topology \\ optimization framework for compliance and \\ linearized buckling via weighted sum method}
+\author{Gabriele Ricatto}
+\date{October 19, 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This paper presents a framework for multi-objective topology optimization, focusing on the trade-off between structural compliance and linear buckling stability. A custom Finite Element Method solver, based on $\mathcal{Q}_4$ bilinear isoparametric elements, is implemented. The material distribution is parameterized utilizing the Solid Isotropic Material with Penalization (SIMP) approach. To explore the trade-off spectrum between global stiffness and the fundamental Buckling Load Factor (BLF), a weighted and dynamically normalized sensitivity scheme is implemented. The proposed framework provides an effective tool for generating preliminary components, illustrating transitions across the design space when stiffness is penalized in favor of structural stability and vice versa. Furthermore, a comparison between the results obtained and those derived from commercial software is presented.
+
+The low-level debugging and code writing were primarily conducted using a multi-agentic human-in-the-loop workflow, leveraging commercially available large language models through Google's Antigravity.
+\end{abstract}
+
+\newpage
+
+\section{Introduction}
+
+\noindent The goal of this work is the topology optimization of a two-dimensional plane-stress domain subjected to in-plane mechanical loads, considering both structural compliance and linearized buckling resistance [5, 6]. The benchmark problem is a rectangular cantilever beam of length $L$ and height $H$, clamped along its left vertical edge ($u_x = u_y = 0$) and loaded by a downward concentrated vertical force $F$ at the bottom-right corner. The material distribution is sought within a fixed reference mesh under a prescribed volume fraction constraint $V_f$ to study how the layout changes when stability is weighted alongside stiffness.
+
+\section{FEM implementation}
+
+\noindent For the implementation of the FEM solver, we rely on bilinear isoparametric elements ($\mathcal{Q}_4$) applied to a fully structured mesh. The rectangular elements are aligned with the global reference system, with the origin of the natural coordinates centered in the centroid of each element. The general formulation for variable-size elements has been omitted, as unnecessarily complicated for the purpose of this project. In accordance with the simplifications introduced, the mapping between physical and natural coordinates assumes the following form:
+\begin{equation}\label{eq:mapping}
+x = x_1 + \frac{dx}{2}\xi, \quad y = y_1 + \frac{dy}{2}\eta
+\end{equation}
+\noindent with $\eta \in [-1; 1]$ and $\xi \in [-1; 1]$. We can now derive the Jacobian as:
+\begin{equation}\label{eq:jacobian}
+[J] = \begin{bmatrix} \frac{\partial x}{\partial \xi} & \frac{\partial y}{\partial \xi} \\ \frac{\partial x}{\partial \eta} & \frac{\partial y}{\partial \eta} \end{bmatrix} = \begin{bmatrix} dx/2 & 0 \\ 0 & dy/2 \end{bmatrix} \implies \det(J) = \frac{1}{4}dxdy
+\end{equation}
+\noindent and its inverse:
+\begin{equation}\label{eq:inv_jacobian}
+[J]^{-1} = \begin{bmatrix} \frac{2}{dx} & 0 \\ 0 & \frac{2}{dy} \end{bmatrix}
+\end{equation}
+\noindent The shape functions are:
+\begin{equation}\label{eq:n1}
+N_1 = \frac{1}{4}(1 - \xi)(1 - \eta)
+\end{equation}
+\begin{equation}\label{eq:n2}
+N_2 = \frac{1}{4}(1 + \xi)(1 - \eta)
+\end{equation}
+\begin{equation}\label{eq:n3}
+N_3 = \frac{1}{4}(1 + \xi)(1 + \eta)
+\end{equation}
+\begin{equation}\label{eq:n4}
+N_4 = \frac{1}{4}(1 - \xi)(1 + \eta)
+\end{equation}
+\noindent The writing and calculation of the elementary stiffness matrix $K_e^0$ are quite simple and are done only once at the beginning of the calculation. After that, in accordance with the SIMP model, at each iteration the following calculation is foreseen:
+\begin{equation}\label{eq:global_k}
+[K] = \sum_{e=1}^{m} E_K(\hat{x}_e) \cdot K_e^0 = \sum_{e=1}^{m} [E_{min} + (E_0 - E_{min})\hat{x}_e^{p_K}][K_e^0]
+\end{equation}
+\noindent We have already introduced the parameters $p_K$ and $p_G$, but we have not yet assigned a value to it. In accordance with numerical evidence and those found in literature, we opt to assign both a value equal to 3, so $p_K = p_G = p = 3$ [1]. \\
+\noindent As for the elementary matrix $K_e^0$:
+\begin{equation}\label{eq:ke0_vol}
+[K_e^0] = \int_V [B]^T [C] [B] dV
+\end{equation}
+\noindent The element is two-dimensional; thus, assuming a unit thickness, the elemental stiffness matrix is defined as:
+\begin{equation}\label{eq:ke0_omega}
+[K_e^0] = \int_\Omega [B]^T [C] [B] \, dxdy
+\end{equation}
+
+where the matrix $[B]$ contains the spatial derivatives of the shape functions. By transitioning to natural coordinates to resolve the integral, the formulation becomes:
+\begin{equation}\label{eq:ke0_nat}
+[K_e^0] = \int_{-1}^{1} \int_{-1}^{1} [B(\xi, \eta)]^T [C] [B(\xi, \eta)] \det(J) \, d\eta d\xi
+\end{equation}
+\noindent The elemental geometric stiffness matrix, $G_e^0$, is derived from the linearization of the Principle of Virtual Work:
+\begin{equation}\label{eq:ge0}
+[G_e^0] = \int_{\Omega_0} B_1^T T[\sigma_e] B_1 d\Omega_0
+\end{equation}
+\noindent where for a Q4 element the matrix $B_1$ is composed of the gradients of the shape functions, and furthermore we have the stress matrix:
+\begin{equation}\label{eq:tsigma}
+T[\sigma_e] = \begin{bmatrix} \sigma_x & \tau_{xy} & 0 & 0 \\ \tau_{xy} & \sigma_y & 0 & 0 \\ 0 & 0 & \sigma_x & \tau_{xy} \\ 0 & 0 & \tau_{xy} & \sigma_y \end{bmatrix}
+\end{equation}
+\noindent Where for simplicity, before optimization, the constant elements are pre-calculated by collecting the individual stresses in binary matrices:
+\begin{equation}\label{eq:tsigma_decomp}
+T[\sigma_e] = \sigma_x \begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 0 & 0 & 0 \\ 0 & 0 & 1 & 0 \\ 0 & 0 & 0 & 0 \end{bmatrix} + \sigma_y \begin{bmatrix} 0 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 0 & 0 \\ 0 & 0 & 0 & 1 \end{bmatrix} + \tau_{xy} \begin{bmatrix} 0 & 1 & 0 & 0 \\ 1 & 0 & 0 & 0 \\ 0 & 0 & 0 & 1 \\ 0 & 0 & 1 & 0 \end{bmatrix}
+\end{equation}
+
+The objective of the decomposition proposed is to separate the state-dependent variables (local stresses) from the geometric constant terms. By substituting the decomposed stress matrix back into the integral, the scalar stress components can be extracted from the integral as follows:
+\begin{equation}\label{eq:ge0_expanded}
+[G_e^0] = \sigma_x \int_{\Omega_0} B_1^T T_x B_1 \, d\Omega_0 + \sigma_y \int_{\Omega_0} B_1^T T_y B_1 \, d\Omega_0 + \tau_{xy} \int_{\Omega_0} B_1^T T_{xy} B_1 \, d\Omega_0
+\end{equation}
+\noindent where $T_x, T_y$, and $T_{xy}$ denote the constant basis matrices presented in (\ref{eq:tsigma_decomp}). This mathematical arrangement yields a significant computational advantage since the three integral terms now depend exclusively on the element geometry and the shape functions, which remain invariant throughout the optimization process on a fixed mesh. Consequently, these matrices can be evaluated exactly once during the pre-processing phase: by doing so, within the optimization loop they will simply be scaled by the updated stress values at each iteration.
+
+\vspace{\baselineskip}
+To give a better insight of the FEM workflow, in the following one can find the steps followed by the solver:
+\begin{enumerate}
+    \item For each element in the mesh, $K_e^0$ is evaluated. This computation is performed only once during the pre-processing phase. With the results obtained, the global stiffness matrix $[K]$ is assembled by penalizing the elemental matrices according to the SIMP interpolation scheme, $K_e = E_K(\hat{x}_e)K_e^0$.
+    \item Boundary conditions (loads and constraints) are applied and the system $KU = F$ is solved.
+    \item Having retrieved the global displacement vector $U$, the overall structural compliance is evaluated as $C = U^T K U$.
+    \item The assembly of the geometric stiffness matrix $G$ requires the local stress state of each element. Extracting the local nodal displacements $u_e$ from the global vector $U$, the elemental strains and stresses are computed using $\epsilon_e = B u_e$ and $\sigma_e = D \epsilon_e$.
+    \item The linear buckling eigenvalue problem $[K + \lambda_i G]\{\phi_i\} = \{0\}$ is solved to extract the fundamental buckling load factors $\lambda$ and their corresponding eigenmodes $\phi$. These results will then be used by the optimizer.
+\end{enumerate}
+
+\section{Optimization problem setup}
+
+\noindent In accordance with [7], the spatial domain is discretized in $m$ equal elements for a total of $n$ \textit{Degrees of Freedom} (DOFs). We also define the pseudo-density field as $\hat{x} = \{\hat{x}_e\}_{e=1}^m$, that are partitioned between 3 sets:
+\begin{enumerate}
+    \item $\Omega_{p_0} \rightarrow$ passive regions where $\hat{x}_e = 0$ (forced void)
+    \item $\Omega_{p_1} \rightarrow$ passive regions where $\hat{x}_e = 1$ (forced solid)
+    \item $\Omega_A \rightarrow$ actual domain with active design space variables.
+\end{enumerate}
+
+In the design space, density $\hat{x}_e$ is obtained through a smoothed Heaviside projection [8]:
+\begin{equation}\label{eq:heaviside}
+\hat{x}_e = \frac{\tanh(\beta\eta_H) + \tanh(\beta(\tilde{x}_e - \eta_H))}{\tanh(\beta\eta_H) + \tanh(\beta(1 - \eta_H))}
+\end{equation}
+\noindent with threshold $\eta_H \in [0, 1]$ (fixed at $\eta_H = 0.5$) and sharpness $\beta \in [1, \infty)$. This equation, using the hyperbolic tangent, forces the intermediate values towards 0 and 1, in order to decrease the shades and define sharper boundaries. \\
+\noindent The intermediate variable $\tilde{x}_e$ represents the filtered density, calculated via:
+\begin{equation}\label{eq:filter}
+\tilde{x}_e = \frac{\sum_{i=1}^m h_{ei} x_i}{\sum_{i=1}^m h_{ei}}
+\end{equation}
+\noindent with $h_{ei} = \max(0, r_{min} - dist(\Omega_i, \Omega_e))$. In this expression, $r_{min}$ specifies the filter radius, and $\text{dist}(\Omega_i, \Omega_e)$ represents the center-to-center distance between elements $i$ and $e$. The introduction of the previous formulation is needed in order to exclude elements further than $r_{min}$ from an element $e$, thus increasing the weight of elements close to $e$. Ultimately, these measures prevent the generation of mesh-dependent solutions and checkerboarding patterns.
+
+\vspace{\baselineskip}
+Let the Young's modulus be parametrized by the SIMP interpolations with penalizations $p_K, p_G > 1$:
+\begin{equation}\label{eq:simp_k}
+E_K(\hat{x}_e) = E_{min} + (E_0 - E_{min})\hat{x}_e^{p_K}
+\end{equation}
+\begin{equation}\label{eq:simp_g}
+E_G(\hat{x}_e) = E_0 \hat{x}_e^{p_G} \quad \text{(see (\ref{eq:eg_cutoff}))}
+\end{equation}
+
+where $E_0$ represents the elastic modulus of the solid base material, and $E_{min} \ll E_0$ is a positive lower bound (in this case, set to $10^{-9}E_0$).
+
+\vspace{\baselineskip}
+The volume fraction is defined as $f(\hat{x}) = \frac{1}{m}\sum_{e=1}^m \hat{x}_e$. Alongside this we introduce the compliance $C(\hat{x}) = F^T U(\hat{x})$, which represents the external work done by the loads: minimizing this compliance is equivalent to maximizing the global stiffness of the design.
+
+To predict structural instability while maintaining computational efficiency, a linearized buckling analysis is adopted. This requires solving the following generalized eigenvalue problem:
+\begin{equation}\label{eq:lba_lambda}
+(K + \lambda_i G)\phi_i = 0
+\end{equation}
+
+Specifically, the fundamental Buckling Load Factor (BLF), denoted as $\lambda_1$, is retrieved through the minimization of:
+\begin{equation}\label{eq:rayleigh}
+\lambda_1(\hat{x}, U) = \min_{v \in \mathbb{R}^n, v \neq 0} \frac{v^T K(\hat{x}) v}{-v^T G(U) v}
+\end{equation}
+
+where $v$ represents a non-zero virtual displacement field. Only positive BLFs, which indicate structural instability under the specific applied load direction, are considered. In computational practice, to prevent numerical singularities, the solver calculates the reciprocal eigenvalue $\mu_i = 1/\lambda_i$. Consequently, the problem can be formulated as:
+\begin{equation}\label{eq:lba_mu}
+(G(U) + \mu_i K(\hat{x}))\phi_i = 0
+\end{equation}
+
+As demonstrated by Ferrari and Sigmund [1, 7], the lowest buckling eigenvalues often coalesce and switch order during optimization. To avoid non-differentiable mode switching, the first $n_{Eig}$ reciprocal buckling eigenvalues are aggregated using the Kreisselmeier-Steinhauser ($KS$) function [7] normalized by the fundamental value $\mu_1$:
+\begin{equation}\label{eq:mu_ks}
+\mu_{KS} = \mu_1 \left[ 1 + \frac{1}{\rho_{KS}} \ln \sum_{m=1}^{n_{Eig}} \exp\left(\rho_{KS}\frac{\mu_m - \mu_1}{\mu_1}\right) \right]
+\end{equation}
+where $\rho_{KS} > 0$ is the aggregation parameter. To explore the conflicting criteria between structural compliance and linear buckling resistance, the two objectives can be combined via a weighted sum method [3]:
+\begin{equation}\label{eq:wsum_gen}
+\tilde{f}(\hat{x}) = \sum_{i=1}^M w_i f_i(\hat{x})
+\end{equation}
+where $w_i \in [0, 1]$ represents the individual weighting parameter assigned to the $i$-th objective. In nominal form, the scalar objective governed by the parameter $\alpha \in [0, 1]$ reads:
+\begin{equation}\label{eq:f_nominal}
+F(\vec{x}) = \alpha \mu_{KS} + (1 - \alpha)C
+\end{equation}
+\noindent Combining those two directly into a single scalar function is problematic, as their respective raw sensitivities differ by several orders of magnitude. A direct weighted sum would cause the objective with the steeper local gradients to dominate the density update.
+
+In practice, the solver does not minimize (\ref{eq:f_nominal}) directly, but operates on normalized sensitivities at each iteration $(i)$ through (\ref{eq:f_grad_scaled}). Rather than using the arithmetic mean (which is sensitive to localized stress peaks near the point load), both gradient fields are scaled by their 95-th percentile absolute value ($P_{95}$):
+\begin{equation}\label{eq:s_p95}
+S_C^{(i)} = P_{95}\left(\left| \frac{\partial C^{(i)}}{\partial \hat{x}} \right|\right), \quad S_\mu^{(i)} = P_{95}\left(\left| \frac{\partial \mu_{KS}^{(i)}}{\partial \hat{x}} \right|\right)
+\end{equation}
+
+Dividing the raw gradients by these factors brings the two sensitivities to the same order of magnitude at each step. The search direction passed to the optimizer is the linear combination governed by the effective weight $\alpha_{eff}^{(i)}$:
+\begin{equation}\label{eq:f_grad_scaled}
+\frac{\partial F^{(i)}}{\partial \hat{x}_e} = (1 - \alpha_{eff}^{(i)})\frac{1}{S_C^{(i)}}\frac{\partial C^{(i)}}{\partial \hat{x}_e} + \alpha_{eff}^{(i)} \frac{1}{S_\mu^{(i)}}\bar{g}_{\mu, e}^{(i)}
+\end{equation}
+where $\bar{g}_{\mu, e}^{(i)}$ is the clamped buckling sensitivity defined in Section 7.
+
+Classical scalarization theory [11] states that minimizing a convex combination with fixed, positive weights yields Pareto-optimal points, although a linear weighted sum cannot reach non-convex regions of the front [9, 10]. In our algorithm, however, the scaling factors $S_C^{(i)}$ and $S_\mu^{(i)}$ are recomputed at every iteration, $\alpha_{eff}^{(i)}$ is ramped, positive buckling sensitivities are truncated ($\bar{g}_{\mu,e}$), and $\beta$ is updated by continuation. For these reasons, the sweep over $\alpha$ is a practical trade-off study across design alternatives rather than an exact Pareto front, and dominated points can appear when modes switch.
+
+Furthermore, $\alpha$ is not a raw weight on $\mu_{KS}$: to keep a continuous load path and avoid disconnecting the tension chord, $\alpha$ is capped at an effective value $\alpha_{eff} \leq 0.65$ (see Section 7). Setting $\alpha = 1$ therefore produces a compromise that retains a $35\%$ compliance contribution. In the dashboard, $\alpha$ is varied from $0$ to $1$ in steps of $0.1$ to track how the layout changes as buckling weight increases.
+
+\section{Sensitivity Analysis}
+
+\noindent To evaluate the minimum of $\lambda$, and therefore the max of $\mu$, we calculate the following derivative [4]:
+\begin{equation}\label{eq:dmu_dx}
+\frac{\partial \mu_i}{\partial \hat{x}_e} = -\left[ \phi_i^T \frac{\partial G}{\partial \hat{x}_e} \phi_i + \mu_i \phi_i^T \frac{\partial K}{\partial \hat{x}_e} \phi_i - w_i^T \frac{\partial K}{\partial \hat{x}_e} U \right]
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\phi_i$: eigenvector / buckling mode shape.
+    \item $\mu_i$: inverse of the critical load factor.
+    \item $U$: displacement vector.
+    \item $w_i$: adjoint vector. It is a vector of virtual displacements, obtained by solving $w_i = K^{-1}[\phi_i^T (\nabla_U G)\phi_i]$, where $\nabla_U$ represents the gradient with respect to the displacements $U$.
+\end{itemize}
+\noindent As for the elemental matrices derivatives, we can write:
+\begin{equation}\label{eq:dk_dg_dx}
+\frac{\partial K^e}{\partial \hat{x}_e} = \frac{\partial E_K(\hat{x}_e)}{\partial \hat{x}_e} K_0^e, \quad \frac{\partial G^e}{\partial \hat{x}_e} = \frac{\partial E_G(\hat{x}_e)}{\partial \hat{x}_e} G_0^e
+\end{equation}
+\noindent while the compliance derivative is evaluated as [7]:
+\begin{equation}\label{eq:dc_dx}
+\frac{\partial C}{\partial \hat{x}_e} = -U_e^T K_0^e U_e \frac{\partial E_K(\hat{x}_e)}{\partial \hat{x}_e}
+\end{equation}
+
+\section{Updating process}
+
+\noindent For the material update at each iteration $i$, an Optimality Criteria (OC) scheme is employed [2]. When the Heaviside projection and density filter are active, the sensitivities with respect to the design variables $x_e$ are obtained through the chain rule described in Section 6.
+
+For the update rule:
+\begin{equation}\label{eq:oc_update}
+x_e^{new} = \begin{cases}
+\max(x_{min}, x_e - \zeta) & \text{if } x_e B_e^{\eta_{OC}} \leq \max(x_{min}, x_e - \zeta) \\
+x_e B_e^{\eta_{OC}} & \text{if } \max(x_{min}, x_e - \zeta) < x_e B_e^{\eta_{OC}} < \min(1, x_e + \zeta) \\
+\min(1, x_e + \zeta) & \text{if } \min(1, x_e + \zeta) \leq x_e B_e^{\eta_{OC}}
+\end{cases}
+\end{equation}
+\noindent with initial move limit $\zeta = 0.2$ and initial damping exponent $\eta_{OC} = 1/2$ (both reduced during $\beta$-continuation, see Section 6). $x_{min}$ is fixed at 0.001 to avoid numerical singularities. Finally, $B_e$ is defined as follows:
+\begin{equation}\label{eq:oc_be}
+B_e = \frac{-\frac{\partial \tilde{F}}{\partial x_e}}{\lambda_L \frac{\partial \tilde{V}}{\partial x_e}}
+\end{equation}
+
+where $\frac{\partial \tilde{F}}{\partial x_e}$ and $\frac{\partial \tilde{V}}{\partial x_e}$ denote the filtered sensitivities of the objective and projected volume fraction, and $\lambda_L$ is the Lagrangian multiplier.
+
+The Lagrangian multiplier $\lambda_L$ is determined through the bisection method, so that the limit on the volume is satisfied:
+\begin{equation}\label{eq:bisection}
+\lambda_L = 0.5(l_2 + l_1); \quad l_2^{(0)} = 10^9, \quad l_1^{(0)} = 0
+\end{equation}
+\noindent The algorithm stops when $(l_2 - l_1)/(l_2 + l_1) < 10^{-4}$, and the update follows the classic bisection procedure.
+
+\section{Projection chain rule and continuation scheme}
+
+\noindent With the Heaviside projection (\ref{eq:heaviside}) and the density filter (\ref{eq:filter}), the sensitivities computed with respect to the physical densities $\hat{x}_e$ are mapped back to the design variables $x_i$ by the chain rule. Differentiating (\ref{eq:heaviside}) with respect to the filtered density $\tilde{x}_e$ gives:
+\begin{equation}\label{eq:dhat_dtilde}
+\frac{\partial \hat{x}_e}{\partial \tilde{x}_e} = \frac{\beta \left(1 - \tanh^2(\beta(\tilde{x}_e - \eta_H))\right)}{\tanh(\beta\eta_H) + \tanh(\beta(1 - \eta_H))}
+\end{equation}
+Applying the discrete transpose of the spatial filter (\ref{eq:filter}), the sensitivities of the objective and volume fraction with respect to $x_i$ are:
+\begin{equation}\label{eq:chain_rule}
+\frac{\partial \tilde{F}}{\partial x_i} = \sum_{e=1}^{m} \frac{h_{ei}}{\sum_{k=1}^{m} h_{ek}} \frac{\partial \hat{x}_e}{\partial \tilde{x}_e} \frac{\partial F}{\partial \hat{x}_e}, \quad \frac{\partial \tilde{V}}{\partial x_i} = \sum_{e=1}^{m} \frac{h_{ei}}{\sum_{k=1}^{m} h_{ek}} \frac{\partial \hat{x}_e}{\partial \tilde{x}_e}
+\end{equation}
+A continuation scheme is used for the projection parameter $\beta$. Starting from $\beta = 1$, $\beta$ is doubled every 20 iterations up to $\beta_{max} = 8$, and kept constant for at least the last 15 iterations before $i_{max}$ so the density field can settle at fixed projection sharpness.
+
+At high $\beta$, the derivative in (\ref{eq:dhat_dtilde}) scales with $\beta$ near $\tilde{x}_e = \eta_H$, which can cause period-2 oscillations in the OC update. To damp these oscillations, the filtered sensitivity is averaged between consecutive steps whenever $\beta$ is constant:
+\begin{equation}\label{eq:sens_damping}
+\left(\frac{\partial \tilde{F}}{\partial x_e}\right)^{(i)}_{stab} = \gamma \left(\frac{\partial \tilde{F}}{\partial x_e}\right)^{(i)} + (1 - \gamma) \left(\frac{\partial \tilde{F}}{\partial x_e}\right)^{(i-1)}
+\end{equation}
+with $\gamma = 0.30$ (the history is reset when $\beta$ increases). At the same time, the OC exponent $\eta_{OC}$ and move limit $\zeta$ in (\ref{eq:oc_update}) are reduced as $\beta$ grows ($\eta_{OC} = 0.5$ for $\beta < 2$, $\eta_{OC} = 0.3$ for $2 \leq \beta < 8$, $\eta_{OC} = 0.25$ for $\beta = 8$; $\zeta = 0.20, 0.10, 0.05, 0.02$ for $\beta = 1, 2, 4, 8$).
+
+Because a few grey elements along the boundaries can keep oscillating at $\beta = 8$ even after the global response has settled, convergence is checked on the objective history once $\beta = \beta_{max}$ for at least $W = 10$ iterations:
+\begin{equation}\label{eq:conv_c}
+\frac{\max_{k \in [i-W, i]} C^{(k)} - \min_{k \in [i-W, i]} C^{(k)}}{C^{(i)}} < \epsilon_C
+\end{equation}
+\begin{equation}\label{eq:conv_blf}
+\frac{\max_{k \in [i-W, i]} \lambda_1^{(k)} - \min_{k \in [i-W, i]} \lambda_1^{(k)}}{\lambda_1^{(i)}} < \epsilon_\lambda
+\end{equation}
+with $\epsilon_C = 10^{-3}$ and $\epsilon_\lambda = 5 \cdot 10^{-3}$. Using the full range ($\max - \min$) over the window avoids false stops when an oscillation has period 2.
+
+\section{Buckling stabilization and trade-off formulation}
+
+\noindent From (\ref{eq:simp_k}) and (\ref{eq:simp_g}), choosing $p_K = p_G = 3$ with $E_{min} = 10^{-9}E_0$ means that in low-density elements ($\hat{x}_e \sim 10^{-2}$, where $\hat{x}_e^3 \gg 10^{-9}$) the ratio $E_G(\hat{x}_e)/E_K(\hat{x}_e)$ stays close to 1. The eigenvalue solver can then return spurious buckling modes localized in the void regions [1, 7]. To remove these modes without changing the cubic law in solid members ($\hat{x}_e \rightarrow 1$), a rational cutoff $\psi(\hat{x}_e)$ is multiplied into the geometric stiffness interpolation:
+\begin{equation}\label{eq:eg_cutoff}
+\psi(\hat{x}_e) = \frac{\hat{x}_e^3}{\hat{x}_e^3 + x_0^3}, \quad E_G(\hat{x}_e) = E_0 \hat{x}_e^3 \psi(\hat{x}_e)
+\end{equation}
+with cutoff threshold $x_0 = 0.10$. For $\hat{x}_e \ll x_0$, $E_G(\hat{x}_e) \propto \hat{x}_e^6$, which drives $E_G/E_K$ to zero in the void. The derivative required in (\ref{eq:dk_dg_dx}) is:
+\begin{equation}\label{eq:deg_cutoff}
+\frac{\partial E_G(\hat{x}_e)}{\partial \hat{x}_e} = 3 E_0 \hat{x}_e^2 \psi(\hat{x}_e)\left(2 - \psi(\hat{x}_e)\right)
+\end{equation}
+
+In the solver, the first $n_{Eig} = 6$ reciprocal eigenvalues $\mu_m = 1/\lambda_m$ (normalized with $\phi_m^T K \phi_m = 1$) are extracted by passing the sparse LU factorization of $[K]$ as a linear operator to ARPACK. Treating the reference scale $\mu_1$ in the exponent of (\ref{eq:mu_ks}) as locally constant within each step, the aggregated sensitivity is obtained as a weighted sum of the modal gradients (\ref{eq:dmu_dx}):
+\begin{equation}\label{eq:ks_grad}
+w_m^{KS} = \frac{\exp\left(\rho_{KS}\frac{\mu_m - \mu_1}{\mu_1}\right)}{\sum_{k=1}^{n_{Eig}} \exp\left(\rho_{KS}\frac{\mu_k - \mu_1}{\mu_1}\right)}, \quad \frac{\partial \mu_{KS}}{\partial \hat{x}_e} = \sum_{m=1}^{n_{Eig}} w_m^{KS} \frac{\partial \mu_m}{\partial \hat{x}_e}
+\end{equation}
+with $\rho_{KS} = 20$.
+
+In tension members and near the point load, $\frac{\partial \mu_{KS}}{\partial \hat{x}_e}$ can be positive. When $\alpha$ is large, a positive buckling sensitivity can make the combined gradient in (\ref{eq:f_grad_scaled}) positive, which sets $B_e \leq 0$ in (\ref{eq:oc_be}) and removes elements from the tension chord. To avoid this, positive buckling sensitivities are clamped to zero before combining them with compliance:
+\begin{equation}\label{eq:g_clamp}
+\bar{g}_{\mu, e}^{(i)} = \min\left(0, \frac{\partial \mu_{KS}^{(i)}}{\partial \hat{x}_e}\right)
+\end{equation}
+The user parameter $\alpha \in [0, 1]$ is mapped to the effective weight $\alpha_{eff}^{(i)}$ ramped over the first $N_{ramp} = 15$ iterations:
+\begin{equation}\label{eq:alpha_eff}
+\alpha_{eff}^{(i)} = 0.65\,\alpha \min\left(1, \frac{i}{N_{ramp}}\right)
+\end{equation}
+The factor $0.65$ keeps at least $35\%$ weight on compliance even at $\alpha = 1$, while the initial ramp lets the primary load path form before the buckling term reaches full weight.
+
+\section{Stress recovery, numerical results, and limitations}
+
+\noindent At the end of the optimization, the plane-stress vector is computed at the centroid of each element from the nodal displacements $u_e$:
+\begin{equation}\label{eq:sigma_rec}
+\sigma_e = \begin{bmatrix} \sigma_x \\ \sigma_y \\ \tau_{xy} \end{bmatrix} = E_0 [C_0] [B_0] u_e
+\end{equation}
+From $\sigma_e$, the in-plane principal stresses $\sigma_{I, II}$ and the signed dominant principal stress $\sigma_{signed}$ are obtained as:
+\begin{equation}\label{eq:sigma_signed}
+\sigma_{I, II} = \frac{\sigma_x + \sigma_y}{2} \pm \sqrt{\left(\frac{\sigma_x - \sigma_y}{2}\right)^2 + \tau_{xy}^2}, \quad \sigma_{signed} = \begin{cases} \sigma_I & \text{if } |\sigma_I| > |\sigma_{II}| \\ \sigma_{II} & \text{otherwise} \end{cases}
+\end{equation}
+In the post-processing view, void elements ($\hat{x}_e < 0.40$) are masked out so that tension chords ($\sigma_{signed} > 0$) and compression struts ($\sigma_{signed} < 0$) can be inspected across the sweep.
+
+The solver was tested on a $400 \times 200\text{ mm}$ cantilever domain discretized with $200 \times 100$ elements ($r_{min} = 2.0$ elements, $V_f = 0.40$, $E_0 = 210\text{ GPa}$, $\nu = 0.3$, thickness $t = 1\text{ mm}$, downward tip load $F = 1000\text{ N}$). Sweeping $\alpha$ from $0$ to $1$ in steps of $0.1$ increases the fundamental buckling load factor $\lambda_1$ by more than a factor of three compared to the pure compliance design ($\alpha = 0$), while compliance $C$ rises accordingly. As $\alpha$ grows, material moves from the tension chord toward the compressed lower flange and internal bracing bars, which divides long compressed struts into shorter segments. For the pure compliance case ($\alpha = 0$), the truss layout matches the reference cantilever topology produced by commercial software (Altair Inspire) under the same boundary conditions and volume fraction; for $\alpha > 0$, commercial packages that only enforce global displacement or stress constraints do not reproduce the secondary buckling bracing observed in the sweep.
+
+The present model is restricted to two-dimensional plane stress (so out-of-plane buckling is not captured) and relies on the linearized pre-buckling assumption, which neglects finite rotations prior to instability. In addition, the dynamically scaled OC update is heuristic: replacing OC with the Method of Moving Asymptotes (MMA) would allow buckling and volume to be treated as separate constraints without manual sensitivity clamping.
+
+\newpage
+
+\begin{thebibliography}{11}
+
+\bibitem{1} Ferrari, F., \& Sigmund, O. (2020). \textit{Revisiting topology optimization with buckling constraints.} Structural and Multidisciplinary Optimization, 61(4), 1401-1415.
+
+\bibitem{2} Sigmund, O. (2001). \textit{A 99 line topology optimization code written in Matlab.} Structural and Multidisciplinary Optimization, 21(2), 120-127.
+
+\bibitem{3} Marler, R. T., \& Arora, J. S. (2004). \textit{Survey of multi-objective optimization methods for engineering.} Structural and Multidisciplinary Optimization, 26(6), 369-395.
+
+\bibitem{4} Sigmund, O. (1997). \textit{On the design of compliant mechanisms using topology optimization.} Mechanics of Structures and Machines, 25(4), 493-524.
+
+\bibitem{5} Neves, M. M., Rodrigues, H., \& Guedes, J. M. (1995). \textit{Generalized topology design of structures with a buckling load criterion.} Structural Optimization, 10(2), 71-78.
+
+\bibitem{6} Bends\o e, M. P., \& Sigmund, O. (2003). \textit{Topology optimization: theory, methods, and applications.} Springer Science \& Business Media.
+
+\bibitem{7} Ferrari, F., Sigmund, O., \& Guest, J. K. (2021). \textit{Topology optimization with linearized buckling criteria in 250 lines of Matlab.} Structural and Multidisciplinary Optimization, 63(6), 3045-3066.
+
+\bibitem{8} Wang, F., Lazarov, B. S., \& Sigmund, O. (2011). \textit{On projection methods, convergence and robust formulations in topology optimization.} Structural and Multidisciplinary Optimization, 43(6), 767-784.
+
+\bibitem{9} Das, I., \& Dennis, J. E. (1997). \textit{A closer look at drawbacks of minimizing weighted sums of objectives for Pareto set generation in multicriteria optimization problems.} Structural Optimization, 14(1), 63-69.
+
+\bibitem{10} Messac, A., Ismail-Yahaya, A., \& Mattson, C. A. (2003). \textit{The normalized normal constraint method for generating the Pareto frontier.} Structural and Multidisciplinary Optimization, 25(2), 86-98.
+
+\bibitem{11} Geoffrion, A. M. (1968). \textit{Proper efficiency and the theory of vector maximization.} Journal of Mathematical Analysis and Applications, 22(3), 618-630.
+
+\end{thebibliography}
+
+\end{document}
