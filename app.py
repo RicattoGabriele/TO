@@ -2,10 +2,11 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 from typing import Optional
 
-# Ensure PicoGK_Dashboard and project root are in sys.path
+# Ensure project root is in sys.path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 for p in [str(PROJECT_ROOT), str(SCRIPT_DIR)]:
@@ -75,8 +76,8 @@ col_s1, col_s2, col_s3 = st.columns(3)
 
 with col_s1:
     st.markdown("**1. Domain and material properties**")
-    nelx_in = st.number_input("Elements X (nelx)", min_value=10, max_value=240, value=55, step=2)
-    nely_in = st.number_input("Elements Y (nely)", min_value=6, max_value=120, value=25, step=2)
+    nelx_in = st.number_input("Elements in X (nelx)", min_value=10, max_value=240, value=55, step=2)
+    nely_in = st.number_input("Elements in Y (nely)", min_value=6, max_value=120, value=25, step=2)
     dx_in = st.number_input("Element size dx (mm)", min_value=0.2, max_value=20.0, value=2.0, step=0.5)
     dy_in = st.number_input("Element size dy (mm)", min_value=0.2, max_value=20.0, value=2.0, step=0.5)
     thickness_in = st.number_input("Thickness t (mm)", min_value=0.1, max_value=100.0, value=5.0, step=0.5)
@@ -87,8 +88,8 @@ with col_s2:
     st.markdown("**2. Optimization parameters**")
     volfrac_in = st.slider("Target volume fraction (Vf)", min_value=0.10, max_value=0.85, value=0.40, step=0.05)
     
-    st.markdown("**Pareto trade-off weight (critical)**")
-    alpha_in = st.slider("Buckling reinforcement factor (α)", min_value=0.00, max_value=0.90, value=0.40, step=0.05)
+    st.markdown("**Trade-off weight**")
+    alpha_in = st.slider("Buckling weight α (0 = compliance only)", min_value=0.00, max_value=1.00, value=0.40, step=0.05)
     
     rmin_in = st.slider("Filter radius r_min (mm)", min_value=1.5, max_value=15.0, value=5.0, step=0.5)
     rmin_elems = rmin_in / max(dx_in, dy_in)
@@ -154,7 +155,7 @@ if invalid_loads:
 
 num_elements = int(nelx_in) * int(nely_in)
 if num_elements > 20000:
-    st.warning(f"⚠️ Warning: the domain contains {num_elements} elements. Linearized buckling analysis (LBA) requires solving a generalized eigenvalue problem on large matrices. This analysis will take several minutes, especially when generating the Pareto frontier (which repeats the calculation 11 times).")
+    st.warning(f"⚠️ Warning: the domain contains {num_elements} elements. Linearized buckling analysis (LBA) requires solving a generalized eigenvalue problem on large matrices. This analysis will take several minutes, especially when generating the α sweep (which repeats the calculation 11 times).")
 
 # Cache key
 simp_key = (
@@ -164,8 +165,6 @@ simp_key = (
     "buckling_max", float(alpha_in), int(nEig_in),
     bc_type, custom_sup_str, tuple(loads_simp)
 )
-
-
 
 # -----------------------------------------------------------------------------
 # Background Job Execution Registry
@@ -235,7 +234,7 @@ def _run_sweep_worker(job_id, params):
     if not job:
         return
     alphas = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    pareto_data = []
+    sweep_data = []
     try:
         for i, a in enumerate(alphas):
             pct = int(((i + 1) / len(alphas)) * 100)
@@ -267,13 +266,23 @@ def _run_sweep_worker(job_id, params):
             for lx, ly, fx, fy in params["loads_simp"]:
                 opt_clone.add_load(lx, ly, fx=fx, fy=fy)
 
+            def sweep_cb(it, max_it, idx=i, alpha_val=a, total_alphas=len(alphas)):
+                overall_frac = (idx + (it / max_it)) / total_alphas
+                pct = int(overall_frac * 100)
+                job["progress"] = min(0.99, overall_frac)
+                job["message"] = (
+                    f"Computing alpha = {alpha_val:.1f} ({idx+1}/{total_alphas}, "
+                    f"iter {it}/{max_it}) — {pct}%..."
+                )
+
             res_alpha = opt_clone.solve(
                 max_iter=params["max_iter"], tol=0.01,
-                mode="buckling_max", alpha_buckling=a, nEig=params["nEig"]
+                mode="buckling_max", alpha_buckling=a, nEig=params["nEig"],
+                progress_callback=sweep_cb
             )
             if res_alpha.success:
-                pareto_data.append((a, opt_clone, res_alpha))
-                job["sweep_results"] = list(pareto_data)
+                sweep_data.append((a, opt_clone, res_alpha))
+                job["sweep_results"] = list(sweep_data)
             job["progress"] = (i + 1) / len(alphas)
 
         job["status"] = "completed"
@@ -355,7 +364,7 @@ def render_main_visualization(optimizer, simp_res):
         view_style_choice = st.selectbox(
             "View style:",
             options=["silhouette_bw", "stress_masked"],
-            format_func=lambda x: "Solid silhouette (B&W)" if x == "silhouette_bw" else "Stress heatmap"
+            format_func=lambda x: "Solid silhouette (b&w)" if x == "silhouette_bw" else "Stress heatmap"
         )
     with col_ctrl2:
         dens_threshold = st.slider("Density threshold", min_value=0.10, max_value=0.85, value=0.40, step=0.02)
@@ -379,39 +388,36 @@ if simp_res is not None and simp_res.success and optimizer is not None:
     default_dens_threshold = 0.40
 
     # -------------------------------------------------------------------------
-    # Pareto Sweep Section
+    # Trade-off Sweep Section
     # -------------------------------------------------------------------------
     st.markdown("---")
     
     @st.fragment
-    def render_pareto_section():
-        st.markdown("#### Trade-off exploration sweep")
+    def render_sweep_section():
+        st.markdown("#### Trade-off sweep")
         st.markdown(
-            "This procedure explores the trade-off spectrum across competing objectives. "
-            "The **α** parameter balances bending stiffness (compliance) and structural stability (buckling).<br>"
-            "- **α near 0**: designed primarily for maximum stiffness (thinner members, higher buckling risk).<br>"
-            "- **α near 1**: designed to prioritize buckling resistance (thicker, aligned members, retaining baseline stiffness).",
-            unsafe_allow_html=True
+            "Trade-off sweep. α weights the buckling term (effective weight ≤ 0.65; α = 0 is compliance-only). "
+            "Results are a scan of trade-offs, not a guaranteed Pareto front."
         )
 
         col_p_btn, col_p_style, col_p_smooth = st.columns([1.5, 1.5, 1])
         with col_p_btn:
             st.markdown("<br>", unsafe_allow_html=True)
-            run_sweep = st.button("Generate trade-off alpha sweep")
+            run_sweep = st.button("Generate α sweep")
         with col_p_style:
             p_view_style = st.selectbox(
                 "Sweep view style:",
                 options=["silhouette_bw", "stress_masked"],
-                format_func=lambda x: "Solid silhouette (B&W)" if x == "silhouette_bw" else "Stress heatmap",
-                key="pareto_view_style_select"
+                format_func=lambda x: "Solid silhouette (b&w)" if x == "silhouette_bw" else "Stress heatmap",
+                key="sweep_view_style_select"
             )
         with col_p_smooth:
             st.markdown("<br>", unsafe_allow_html=True)
-            p_smooth = st.checkbox("Smooth visualization", value=True, key="pareto_smooth_checkbox")
+            p_smooth = st.checkbox("Smooth visualization", value=True, key="sweep_smooth_checkbox")
 
         p_thresh = 0.40
 
-        def make_pareto_card(opt_obj, res_obj, alpha_val):
+        def make_sweep_card(opt_obj, res_obj, alpha_val):
             f_p = opt_obj.to_scientific_figures(
                 res=res_obj,
                 threshold=p_thresh,
@@ -453,7 +459,7 @@ if simp_res is not None and simp_res.success and optimizer is not None:
                 t = threading.Thread(target=_run_sweep_worker, args=(sweep_job_id, params), daemon=True)
                 t.start()
                 st.session_state["active_sweep_job"] = sweep_job_id
-                st.rerun(scope="fragment")
+                st.rerun()
 
         current_sweep_id = st.session_state.get("active_sweep_job")
         if current_sweep_id and current_sweep_id in jobs:
@@ -467,25 +473,24 @@ if simp_res is not None and simp_res.success and optimizer is not None:
                         with cols[i % 3].container():
                             st.markdown(f"**α = {a:.1f}**")
                             st.caption(f"C: {res_alpha.compliance:.1f} N·mm | BLF: {res_alpha.blf_history[-1] if res_alpha.blf_history else 'N/A':.3f}")
-                            f_plot = make_pareto_card(opt_clone, res_alpha, a)
+                            f_plot = make_sweep_card(opt_clone, res_alpha, a)
                             st.plotly_chart(f_plot, use_container_width=True)
                 time.sleep(1.0)
-                st.rerun(scope="fragment")
+                st.rerun()
             elif sjob["status"] == "completed":
-                st.session_state["pareto_results"] = sjob["sweep_results"]
-                st.session_state["pareto_key"] = simp_key
+                st.session_state["sweep_results"] = sjob["sweep_results"]
+                st.session_state["sweep_key"] = simp_key
             elif sjob["status"] == "error":
                 st.error(f"Error during sweep: {sjob['error']}")
 
-        if st.session_state.get("pareto_results") and (not current_sweep_id or jobs.get(current_sweep_id, {}).get("status") != "running"):
-            pareto_data = st.session_state["pareto_results"]
+        results_to_display = st.session_state.get("sweep_results")
+        if results_to_display and (not current_sweep_id or jobs.get(current_sweep_id, {}).get("status") != "running"):
             cols = st.columns(3)
-            for i, (a, opt_clone, res_alpha) in enumerate(pareto_data):
+            for i, (a, opt_clone, res_alpha) in enumerate(results_to_display):
                 with cols[i % 3].container():
                     st.markdown(f"**α = {a:.1f}**")
                     st.caption(f"C: {res_alpha.compliance:.1f} N·mm | BLF: {res_alpha.blf_history[-1] if res_alpha.blf_history else 'N/A':.3f}")
-                    f_plot = make_pareto_card(opt_clone, res_alpha, a)
+                    f_plot = make_sweep_card(opt_clone, res_alpha, a)
                     st.plotly_chart(f_plot, use_container_width=True)
 
-    render_pareto_section()
-
+    render_sweep_section()
