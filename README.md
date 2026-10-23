@@ -26,14 +26,14 @@ All results: 400 × 200 mm cantilever (200 × 100 elements of 2 mm), left edge f
 - Inspire's topology solver has no buckling objective, so only α = 0 can be compared. This comparison does not validate the buckling part.
 
 ![Comparison with Altair Inspire](docs/figures/validation_inspire.png)
-*Fig. 1: Compliance-only topology, 400×200 mm domain, fixed left edge, F = 1000 N, V_f = 25%: in-house solver, point load (left) vs. Altair Inspire/OptiStruct, 1 mm² face load (right). Raw thresholded densities, no smoothing.*
+*Fig. 1: Compliance-only topology, 400×200 mm domain, fixed left edge, F = 1000 N, V_f = 25%: in-house solver, point load (left) vs. Altair Inspire/OptiStruct, face load (right).*
 
 ### α sweep (compliance–buckling trade-off)
  
 α weights the buckling term. The effective weight is capped at 0.65 (see the documentation), so α = 0 is compliance-only (the BLF is computed a posteriori, not optimized) and α = 1 is **not** buckling-only. KS aggregation of 4 modes (ρ_KS = 20).
  
 ![α sweep](docs/figures/alpha_sweep.png)
-*Fig. 2: Designs for α = 0, 0.3 and 1.0, with compliance C and in-plane BLF. α = 0 is compliance-only; α = 1 is not buckling-only (effective weight capped at 0.65).*
+*Fig. 2: Designs for α = 0, 0.3 and 1.0, with compliance C and BLF. α = 0 is compliance-only; α = 1 is not buckling-only (effective weight capped at 0.65).*
 
 ![C–BLF trade-off](docs/figures/c_blf_tradeoff.png)
 *Fig. 3: C–BLF values for the 11 sweep points; the hollow marker (α = 0.8) is dominated by α = 0.7.*
